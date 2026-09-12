@@ -9,3 +9,9 @@ uv.lock.bak
 # per-rig disposable + durable databases never live in the tool repo
 # (root only — tests/fixtures/rig/.ctx/ is a committed test fixture, not runtime data)
 /.ctx/
+
+# NAVE-generated frontend for ctx.db (build-with-sea) — regenerate with
+# `sea nave generate`, never hand-edit.
+/frontend/
+# sea do/insert pre-edit backups
+.sea/backups/

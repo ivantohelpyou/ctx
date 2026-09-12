@@ -1,7 +1,12 @@
+import stat
 import time
 
+from click.testing import CliRunner
+
+from ctx_cli.cli import main
+from ctx_cli.corpus import load_config
 from ctx_cli.indexer import build_index
-from ctx_cli.query import DEFAULT_BUDGET, apply_budget, render, search
+from ctx_cli.query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, search
 
 
 def test_search_finds_by_terms(config):
@@ -84,3 +89,67 @@ def test_query_latency_under_100ms(config):
     apply_budget(hits, DEFAULT_BUDGET)
     elapsed_ms = (time.perf_counter() - start) * 1000
     assert elapsed_ms < 100, f"ctx get took {elapsed_ms:.1f}ms, budget is 100ms"
+
+
+def _add_widget_docs(rig_dir, count):
+    shared_dir = rig_dir / "docs" / "shared"
+    for i in range(count):
+        (shared_dir / f"widget-{i:02d}.md").write_text(
+            f"---\nid: widget-{i:02d}\ntitle: Widget config {i}\n"
+            f"summary: widget configuration note {i}.\n---\n"
+        )
+
+
+def test_apply_budget_hard_caps_at_default_limit_of_5(rig_dir):
+    """Finding 7: on a corpus with many small hits and a generous budget,
+    ctx get must not return dozens of entries — default cap is 5."""
+    _add_widget_docs(rig_dir, 8)
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    hits = search(config.index_db_path, "widget config")
+    assert len(hits) == 8
+    kept, dropped = apply_budget(hits, budget=100_000)
+    assert len(kept) == DEFAULT_LIMIT == 5
+    assert len(dropped) == 3
+
+
+def test_apply_budget_limit_override(rig_dir):
+    _add_widget_docs(rig_dir, 8)
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    hits = search(config.index_db_path, "widget config")
+    kept, dropped = apply_budget(hits, budget=100_000, limit=8)
+    assert len(kept) == 8
+    assert dropped == []
+
+
+def test_cli_get_respects_limit_flag(rig_dir):
+    _add_widget_docs(rig_dir, 8)
+    runner = CliRunner()
+    result = runner.invoke(main, ["get", "widget config", "--dir", str(rig_dir), "--limit", "3"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.strip().splitlines()
+    kept_lines = [line for line in lines if not line.startswith("dropped:")]
+    dropped_lines = [line for line in lines if line.startswith("dropped:")]
+    assert len(kept_lines) == 3
+    assert len(dropped_lines) == 5
+
+
+def test_readonly_ctx_dir_get_degrades_instead_of_crashing(rig_dir):
+    """Finding 6: `ctx get` only ever reads index.db and must not require a
+    writable `.ctx/`; a failed query-log write degrades to a stderr warning,
+    never a traceback, and the query itself still succeeds."""
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)  # index.db exists before we lock the directory down
+
+    ctx_dir = rig_dir / ".ctx"
+    mode = ctx_dir.stat().st_mode
+    ctx_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # read+execute, no write
+    try:
+        runner = CliRunner()
+        result = runner.invoke(main, ["get", "fts5", "--dir", str(rig_dir)])
+        assert result.exit_code == 0, result.output
+        assert "exp-001" in result.output
+        assert "Traceback" not in result.output
+    finally:
+        ctx_dir.chmod(mode)  # restore so pytest can clean up tmp_path

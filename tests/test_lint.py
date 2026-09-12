@@ -87,6 +87,54 @@ def test_shared_corpus_over_byte_ceiling_is_an_error(rig_dir):
     assert any("over the" in e and "byte ceiling" in e for e in report.errors)
 
 
+def test_duplicate_id_is_a_lint_error(rig_dir):
+    dupe = rig_dir / "docs" / "shared" / "dupe.md"
+    dupe.write_text("---\nid: exp-001\ntitle: Dupe\nsummary: shares an id.\n---\n")
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)
+    assert not report.ok
+    assert any("duplicate id" in e and "exp-001" in e for e in report.errors)
+
+
+def test_absolute_covers_path_is_an_error_even_if_it_exists(rig_dir):
+    """Finding 5: `rig_root / cover` silently discards rig_root when `cover`
+    is absolute (pathlib behavior), so an absolute covers: entry must be
+    rejected outright rather than resolved against the filesystem root."""
+    explainer = rig_dir / "docs" / "explainers" / "001-fts5-choice.md"
+    text = explainer.read_text().replace("src/searcher.py", "/etc/hostname")
+    explainer.write_text(text)
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)
+    assert not report.ok
+    assert any("must be relative to rig root" in e for e in report.errors)
+
+
+def test_absolute_glob_covers_path_does_not_crash_lint(rig_dir):
+    """Finding 4: an absolute covers: entry containing a glob character used
+    to raise NotImplementedError out of Path.glob() and kill the whole lint
+    run. Must report a lint error for that doc and keep going."""
+    explainer = rig_dir / "docs" / "explainers" / "001-fts5-choice.md"
+    text = explainer.read_text().replace("src/searcher.py", "/etc/*.conf")
+    explainer.write_text(text)
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)  # must not raise
+    assert not report.ok
+    assert any("must be relative to rig root" in e for e in report.errors)
+    # the rest of the corpus still got linted (coverage was computed at all)
+    assert "explainers" in report.coverage
+
+
+def test_covers_path_escaping_rig_root_via_dotdot_is_an_error(rig_dir):
+    explainer = rig_dir / "docs" / "explainers" / "001-fts5-choice.md"
+    text = explainer.read_text().replace("src/searcher.py", "../outside.py")
+    explainer.write_text(text)
+    (rig_dir.parent / "outside.py").write_text("# outside the rig root\n")
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)  # must not raise
+    assert not report.ok
+    assert any("resolves outside rig root" in e for e in report.errors)
+
+
 def test_explainer_staleness_against_git_history(rig_dir):
     _init_git_repo(rig_dir)
     # Now edit the covered source file and commit again, after last-verified.

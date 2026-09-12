@@ -3,8 +3,10 @@ import shutil
 import sqlite3
 import time
 
+import pytest
+
 from ctx_cli.corpus import load_config
-from ctx_cli.indexer import build_index, index_is_stale
+from ctx_cli.indexer import DuplicateIdError, build_index, index_is_stale
 
 
 def test_build_index_counts_all_fixture_docs(config):
@@ -51,6 +53,81 @@ def test_rm_and_reindex_reproduces_same_row_count(config):
     config.index_db_path.unlink()
     n2 = build_index(config)
     assert n1 == n2
+
+
+def test_duplicate_id_raises_before_any_write(rig_dir):
+    """Finding 1: a duplicate id must fail cleanly (DuplicateIdError), before
+    any row is written — never a raw sqlite3.IntegrityError partway through,
+    and never a schema-only index.db left behind."""
+    dupe = rig_dir / "docs" / "explainers" / "003-dupe.md"
+    dupe.write_text(
+        "---\nid: exp-001\ntitle: Duplicate\nsummary: shares an id with exp-001.\n---\n"
+    )
+    config = load_config(rig_dir / ".ctx")
+    with pytest.raises(DuplicateIdError) as excinfo:
+        build_index(config)
+    assert "exp-001" in str(excinfo.value)
+    assert not config.index_db_path.exists()
+
+
+def test_duplicate_id_across_corpora_detected(rig_dir):
+    dupe = rig_dir / "docs" / "shared" / "dupe.md"
+    dupe.write_text(
+        "---\nid: adr-001\ntitle: Duplicate\nsummary: shares an id with a decision doc.\n---\n"
+    )
+    config = load_config(rig_dir / ".ctx")
+    with pytest.raises(DuplicateIdError) as excinfo:
+        build_index(config)
+    assert "adr-001" in str(excinfo.value)
+
+
+def test_failed_build_leaves_no_temp_files_in_ctx_dir(rig_dir):
+    dupe = rig_dir / "docs" / "explainers" / "003-dupe.md"
+    dupe.write_text("---\nid: exp-001\ntitle: X\nsummary: Y\n---\n")
+    config = load_config(rig_dir / ".ctx")
+    with pytest.raises(DuplicateIdError):
+        build_index(config)
+    leftovers = list(config.ctx_dir.glob(".index-*"))
+    assert leftovers == []
+
+
+def test_deleted_source_file_triggers_reindex(config):
+    """Finding 2: index_is_stale must notice a *deletion*, not just an edit —
+    mtime comparisons alone never see a file that is no longer there."""
+    build_index(config)
+    assert not index_is_stale(config)
+
+    doomed = config.corpora[0].path / "002-budget-arg.md"
+    doomed.unlink()
+    assert index_is_stale(config)
+
+
+def test_staleness_uses_stored_build_fingerprint_not_index_file_mtime(config):
+    """Finding 3: comparing against the index *file's own* on-disk mtime can
+    miss an edit that lands at or before that mtime (write latency, clock
+    ticks). Comparing against the max source mtime recorded *at build time*
+    catches it even if the index file's own mtime is later still."""
+    build_index(config)
+
+    doc = config.corpora[0].path / "001-fts5-choice.md"
+    build_time_newest = doc.stat().st_mtime
+    for _spec, p in [(s, f) for s in config.corpora for f in s.path.glob("*.md")]:
+        build_time_newest = max(build_time_newest, p.stat().st_mtime)
+
+    # Simulate the index file's own mtime landing well after the real
+    # build-time fingerprint (write buffering / clock skew) ...
+    future = build_time_newest + 10
+    os.utime(config.index_db_path, (future, future))
+
+    # ... then an edit that is newer than the fingerprint but still older
+    # than the index file's own (inflated) mtime.
+    edit_time = build_time_newest + 3
+    os.utime(doc, (edit_time, edit_time))
+
+    assert index_is_stale(config), (
+        "a source edit between the build fingerprint and the index file's "
+        "own (later) mtime must still be detected as stale"
+    )
 
 
 def test_corpus_path_outside_rig_root_uses_absolute_path(tmp_path, rig_dir):

@@ -1,8 +1,8 @@
 {
-  "models": "src/ctx_cli/ctxdb/models.py",
+  "models": "src/ctx_cli/ctxdb",
   "name": "ctx",
-  "primary_schema": "ctx_db",
+  "primary_schema": "sea_ctx",
+  "ship_id": "10383e6fbc8f4b2cbe8c80f9d2244306",
   "description": "The durable half of ctx: a query log (queries) and a zero-useful-result log (misses), one ctx.db per rig at .ctx/ctx.db. The disposable half (index.db, FTS5 over frontmatter) is not a SEA ship — it is rebuilt from markdown on every `ctx index` and has no admin surface.",
-  "intended_use": "Ivan, reviewing which ctx queries came up empty (the misses table) to decide whether a corpus needs a better terms: field before ever reaching for vectors (plan Phase 4).",
-  "ship_id": "10383e6fbc8f4b2cbe8c80f9d2244306"
+  "intended_use": "Ivan, reviewing which ctx queries came up empty (the misses table) to decide whether a corpus needs a better terms: field before ever reaching for vectors (plan Phase 4)."
 }

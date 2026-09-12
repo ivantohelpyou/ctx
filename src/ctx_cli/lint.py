@@ -83,6 +83,49 @@ def _lint_common(spec: CorpusSpec, path: Path, doc: dict, errors: list[str]) -> 
             errors.append(f"{spec.name}:{rel}: missing required frontmatter field '{field}'")
 
 
+def _resolve_covers_entry(
+    config: RigConfig, spec: CorpusSpec, doc_path: Path, cover: str, errors: list[str]
+) -> list[Path] | None:
+    """Resolve one `covers:` entry to the files it names. Returns None (having
+    already appended an error) for anything that isn't a path relative to the
+    rig root: absolute paths, `../` escapes, and glob patterns that raise.
+    Returns a (possibly empty) list of matches otherwise."""
+    if Path(cover).is_absolute():
+        errors.append(f"{spec.name}:{doc_path}: covers path must be relative to rig root: {cover}")
+        return None
+
+    is_glob = any(c in cover for c in "*?[")
+    try:
+        if is_glob:
+            matches = list(config.rig_root.glob(cover))
+        else:
+            candidate = config.rig_root / cover
+            matches = [candidate] if candidate.exists() else []
+    except (NotImplementedError, ValueError, OSError) as e:
+        errors.append(f"{spec.name}:{doc_path}: invalid covers pattern '{cover}': {e}")
+        return None
+
+    if not matches:
+        return []  # genuinely doesn't exist — let the caller report that
+
+    rig_root_resolved = config.rig_root.resolve()
+    safe_matches = []
+    escaped = False
+    for m in matches:
+        try:
+            m.resolve().relative_to(rig_root_resolved)
+        except ValueError:
+            errors.append(
+                f"{spec.name}:{doc_path}: covers path resolves outside rig root: {cover}"
+            )
+            escaped = True
+            continue
+        safe_matches.append(m)
+    if escaped and not safe_matches:
+        return None  # already reported above; don't also report "does not exist"
+    return safe_matches
+
+
 def _lint_explainers(config: RigConfig, spec: CorpusSpec, docs, errors: list[str]) -> float:
     covered_count = 0
     for path, doc in docs:
@@ -93,10 +136,9 @@ def _lint_explainers(config: RigConfig, spec: CorpusSpec, docs, errors: list[str
             covered_count += 1
         last_verified = _parse_date(doc.get("last-verified") or doc.get("last_verified"))
         for cover in covers:
-            cover_path = config.rig_root / cover
-            matches = list(config.rig_root.glob(cover)) if any(c in cover for c in "*?[") else (
-                [cover_path] if cover_path.exists() else []
-            )
+            matches = _resolve_covers_entry(config, spec, path, cover, errors)
+            if matches is None:
+                continue  # already reported: absolute, bad pattern, or escapes rig root
             if not matches:
                 errors.append(f"{spec.name}:{path}: covers path does not exist: {cover}")
                 continue
@@ -173,6 +215,7 @@ def _lint_shared(spec: CorpusSpec, docs, errors: list[str]) -> None:
 
 def lint(config: RigConfig) -> LintReport:
     report = LintReport()
+    seen_ids: dict[str, list[str]] = {}
     for spec in config.corpora:
         docs = _load_docs(spec)
         for path, doc in docs:
@@ -180,6 +223,8 @@ def lint(config: RigConfig) -> LintReport:
                 report.errors.append(f"{spec.name}:{path}: no parseable frontmatter")
                 continue
             _lint_common(spec, path, doc, report.errors)
+            if doc.get("id"):
+                seen_ids.setdefault(str(doc["id"]), []).append(f"{spec.name}:{path}")
 
         if spec.type == "explainers":
             report.coverage[spec.name] = _lint_explainers(config, spec, docs, report.errors)
@@ -187,4 +232,8 @@ def lint(config: RigConfig) -> LintReport:
             _lint_decisions(spec, docs, report.errors)
         elif spec.type == "shared":
             _lint_shared(spec, docs, report.errors)
+
+    for doc_id, locations in sorted(seen_ids.items()):
+        if len(locations) > 1:
+            report.errors.append(f"duplicate id {doc_id!r} used by: {', '.join(locations)}")
     return report

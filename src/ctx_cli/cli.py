@@ -11,6 +11,7 @@ ctx checkpoint "<note>"         append session state to checkpoints/current.md
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import click
@@ -26,10 +27,14 @@ from .corpus import (
     load_config,
 )
 from .ctxdb.db import log_query
-from .indexer import build_index, ensure_fresh_index
+from .indexer import DuplicateIdError, build_index, ensure_fresh_index
 from .lint import lint as run_lint
-from .query import DEFAULT_BUDGET, apply_budget, render, search
+from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, search
 from .templates import ROUTING_TEMPLATE
+
+# Errors that mean "the index/corpus is broken in a known way" — reported as a
+# clean one-line, non-zero-exit message, never a raw traceback.
+INDEX_ERRORS = (DuplicateIdError, sqlite3.Error, OSError)
 
 SHARED_CORPUS_DEFAULT = Path.home() / "gt" / "docs" / "shared"
 
@@ -84,7 +89,10 @@ def index_cmd(start_dir: Path | None):
     except CtxNotFoundError as e:
         raise click.ClickException(str(e)) from e
     config = load_config(ctx_dir)
-    count = build_index(config)
+    try:
+        count = build_index(config)
+    except INDEX_ERRORS as e:
+        raise click.ClickException(str(e)) from e
     click.echo(f"indexed {count} documents into {config.index_db_path}")
 
 
@@ -95,22 +103,40 @@ def index_cmd(start_dir: Path | None):
     "--budget", default=DEFAULT_BUDGET, show_default=True, help="Budget in tokens (chars/4)."
 )
 @click.option(
+    "--limit",
+    default=DEFAULT_LIMIT,
+    show_default=True,
+    help="Max entries returned, regardless of budget.",
+)
+@click.option(
     "--history", is_flag=True, default=False, help="Include superseded/non-accepted docs."
 )
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
-def get_cmd(query: str, corpus: str | None, budget: int, history: bool, start_dir: Path | None):
+def get_cmd(
+    query: str,
+    corpus: str | None,
+    budget: int,
+    limit: int,
+    history: bool,
+    start_dir: Path | None,
+):
     """Search the index; print a budgeted, deterministic result set."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
     except CtxNotFoundError as e:
         raise click.ClickException(str(e)) from e
     config = load_config(ctx_dir)
-    ensure_fresh_index(config)
+    try:
+        ensure_fresh_index(config)
+        hits = search(config.index_db_path, query, corpus=corpus, history=history)
+    except INDEX_ERRORS as e:
+        raise click.ClickException(str(e)) from e
 
-    hits = search(config.index_db_path, query, corpus=corpus, history=history)
-    kept, dropped = apply_budget(hits, budget)
+    kept, dropped = apply_budget(hits, budget, limit=limit)
     click.echo(render(kept, dropped), nl=False)
 
+    # A failure to log is never a reason to fail a query that already
+    # succeeded — log_query() degrades to a stderr warning on its own.
     log_query(config.ctx_db_path, query=query, budget=budget, returned=len(kept), corpus=corpus)
 
 
