@@ -10,6 +10,12 @@ Before grepping around this rig, run:
 It searches hand-written summaries (not file bodies) and returns ranked hits as
 `id — title — path#slug — summary`, plus `dropped:` lines for anything the
 budget excluded. Read the one or two files it names; don't scan the corpus.
+A superseded decision is never returned this way — add `--history` to see it,
+annotated with `superseded-by: <id> — <title>` (the current head, not just
+its direct successor).
+
+    ctx history <id>            a decision's supersession chain, oldest to
+                                 newest, marking the current head
 
 Corpora configured for this rig are in `.ctx/config.yaml`. `shared` is
 cross-rig, at `~/gt/docs/shared/` — conventions and lessons, nothing local.

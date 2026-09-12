@@ -100,6 +100,26 @@ calendar date, kept as written, never shifted for timezone), or a string in
 either shape. A value that doesn't parse as any of those is a `ctx lint`
 error, not a silently-malformed index value.
 
+### `exclude:` — files in a corpus directory that aren't documents
+
+ctx otherwise treats every `*.md` under a corpus's `path` as a document
+`ctx lint` requires `id`/`title`/`summary` on. A README explaining what a
+directory holds (a generated-export's "do not edit" note, for one) isn't a
+decision or an explainer, so it's excluded by default, everywhere:
+
+```yaml
+corpora:
+  decisions:
+    type: decisions
+    path: docs/decisions
+    exclude: ["README.md", "drafts/*.md"]   # default is just ["README.md"]
+```
+
+Globs are relative to the corpus's own `path`. An excluded file is invisible
+to indexing, lint, and the staleness fingerprint alike — all three read the
+same file list. `exclude: []` un-hides `README.md` for a corpus that
+genuinely wants it treated as a document.
+
 ## Quick start
 
 ```bash
@@ -109,6 +129,7 @@ ctx init                       # writes .ctx/config.yaml, .ctx/ROUTING.md, gitig
 # edit .ctx/config.yaml to point `explainers:` at the real docs directory
 ctx index                      # build .ctx/index.db
 ctx get "why did we pick FTS5" --budget 1200
+ctx history adr-002            # a decision's supersession chain, oldest to newest
 ctx lint                       # frontmatter + supersession integrity, covers coverage %
 ctx checkpoint "indexed explainers; next: point research corpus at Hugo docs"
 ```
@@ -119,6 +140,7 @@ ctx checkpoint "indexed explainers; next: point research corpus at Hugo docs"
 
 ```
 id — title — path#slug — summary
+  superseded-by: id — title      (only with --history, only if superseded)
 ...
 dropped: id — title
 ...
@@ -126,6 +148,43 @@ dropped: id — title
 
 `ctx get` never scans document bodies at query time — only the frontmatter
 index. Read the one or two files it names.
+
+## Supersession: the walker and `--history`
+
+`decisions` corpus documents form a graph via `supersedes:`/`superseded-by:`
+(`ctx index` writes it into `index.db`'s `supersessions(from_id, to_id)`
+table, `from_id` the newer document). `ctx get` filters on it by default —
+acceptance criterion 2 of the plan: **a superseded decision is never
+returned without `--history`.** The filter runs in the SQL `WHERE` clause,
+before ranking, so a superseded document never consumes budget either; it
+isn't ranked-then-dropped, it's never a candidate.
+
+With `--history`, superseded documents are included, each annotated with the
+walker's answer to "what replaced this, ultimately" — the HEAD of its chain,
+not just its direct successor, so reading one line never leaves you one hop
+short of what's current:
+
+```
+adr-001 — Two database files, not one — docs/decisions/adr-001....md#... — ...
+  superseded-by: adr-002 — Two database files, built with SEA
+```
+
+`ctx history <id>` prints the same graph the other way: the full chain
+connected to `<id>` (successors and predecessors, transitively), oldest to
+newest by `date`, marking whichever entry has no successor of its own as the
+current head:
+
+```
+$ ctx history adr-001
+adr-001 — superseded — 2026-09-01 — Two database files, not one
+adr-002 — accepted — 2026-09-05 — Two database files, built with SEA  <- current
+```
+
+Both walks (`history.py`) are visited-set bounded: a cycle or a dangling id
+in a hand-edited or corrupt `index.db` stops the walk instead of looping or
+raising — `ctx lint` is what rejects cycles and unreciprocated links when
+they can still be fixed at the source (`ctx index` time); the walker's job
+is to not crash on an index that got past it anyway.
 
 ## Design decisions that depart from a naive read of the memo
 
@@ -140,9 +199,9 @@ index. Read the one or two files it names.
   by hand.
 - Two database files, not one, because "disposable" and "keeps a durable query
   log" cannot both be true of a single file.
-- `decisions` corpus frontmatter contract + lint ship now; the supersession
-  *walker* used by `ctx get --history` is deferred to when a rig has ten or
-  more decision documents (Phase 3 of the plan).
+- The supersession walker and `ctx get --history`'s chained annotation ship
+  in Phase 3, against the real decisions corpus (`strategy export --ctx`,
+  hq-sl5k) — see "Supersession" above.
 
 ## Tests
 
@@ -155,5 +214,8 @@ Covers: frontmatter parsing, index build, budgeted `ctx get` output, lint rules
 ceiling), checkpoint append, and byte-identity of `ctx get` output across a
 `rm index.db && ctx index` cycle. Also: `map:` validation (unknown target,
 `aliases:` into tags/terms, duplicate target key), hand-authored-key
-precedence, tags/terms comma-splitting, `type: hugo` draft-skipping, and
-`date`/`last-verified` normalization across date/datetime/string input.
+precedence, tags/terms comma-splitting, `type: hugo` draft-skipping,
+`date`/`last-verified` normalization across date/datetime/string input, the
+supersession walker (successors/predecessors, cycle/dangling-id safety),
+`ctx get --history`'s chained annotation and its budget accounting, `ctx
+history`, and per-corpus `exclude:`.

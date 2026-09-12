@@ -31,6 +31,42 @@ def test_history_flag_includes_superseded_decision(config):
     assert any(h.id == "adr-001" for h in history_hits)
 
 
+def test_history_flag_annotates_superseded_hit_with_chain_head(config):
+    """The walker's job: --history must not just include a superseded doc, it
+    must say what replaced it — the head of its chain (adr-002 is the fixture's
+    only successor, so head == direct successor here; test_history.py covers
+    a longer chain where head != direct successor)."""
+    build_index(config)
+    history_hits = search(config.index_db_path, "database", corpus="decisions", history=True)
+    adr1 = next(h for h in history_hits if h.id == "adr-001")
+    assert adr1.superseded_by == ("adr-002", "Two database files, built with SEA")
+    adr2 = next(h for h in history_hits if h.id == "adr-002")
+    assert adr2.superseded_by is None  # adr-002 is current, nothing replaced it
+
+    output = render(*apply_budget(history_hits, DEFAULT_BUDGET))
+    assert "  superseded-by: adr-002 — Two database files, built with SEA" in output
+
+
+def test_without_history_flag_no_annotation_and_no_walker_cost_for_accepted_hit(config):
+    build_index(config)
+    default_hits = search(config.index_db_path, "database", corpus="decisions")
+    assert all(h.superseded_by is None for h in default_hits)
+
+
+def test_byte_identical_history_output_after_rm_and_reindex(config):
+    build_index(config)
+    hits1 = search(config.index_db_path, "database", corpus="decisions", history=True)
+    out1 = render(*apply_budget(hits1, DEFAULT_BUDGET))
+
+    config.index_db_path.unlink()
+    build_index(config)
+    hits2 = search(config.index_db_path, "database", corpus="decisions", history=True)
+    out2 = render(*apply_budget(hits2, DEFAULT_BUDGET))
+
+    assert out1 == out2
+    assert out1.encode("utf-8") == out2.encode("utf-8")
+
+
 def test_corpus_filter(config):
     build_index(config)
     hits = search(config.index_db_path, "worktree", corpus="shared")
