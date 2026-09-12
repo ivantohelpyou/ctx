@@ -1,7 +1,9 @@
 import os
+import shutil
 import sqlite3
 import time
 
+from ctx_cli.corpus import load_config
 from ctx_cli.indexer import build_index, index_is_stale
 
 
@@ -49,3 +51,23 @@ def test_rm_and_reindex_reproduces_same_row_count(config):
     config.index_db_path.unlink()
     n2 = build_index(config)
     assert n1 == n2
+
+
+def test_corpus_path_outside_rig_root_uses_absolute_path(tmp_path, rig_dir):
+    """`shared` lives at a fixed cross-rig location outside any one rig's
+    tree — indexing it must not assume every corpus is nested under rig_root."""
+    outside_shared = tmp_path / "outside-shared"
+    shutil.copytree(rig_dir / "docs" / "shared", outside_shared)
+    (rig_dir / ".ctx" / "config.yaml").write_text(
+        "corpora:\n"
+        "  shared:\n"
+        "    type: shared\n"
+        f"    path: {outside_shared}\n"
+    )
+    config = load_config(rig_dir / ".ctx")
+    count = build_index(config)
+    assert count == 1
+    conn = sqlite3.connect(config.index_db_path)
+    path_value = conn.execute("SELECT path FROM documents WHERE id = 'shared-001'").fetchone()[0]
+    conn.close()
+    assert path_value == str(outside_shared / "lesson-001-worktrees.md")

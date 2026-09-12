@@ -48,6 +48,16 @@ def _joined(values: list[str]) -> str:
     return " ".join(values)
 
 
+def _display_path(path: Path, rig_root: Path) -> str:
+    """Rig-relative path when the corpus lives under the rig (explainers,
+    decisions); absolute path when it doesn't (shared, which lives at a fixed
+    cross-rig location outside any one rig's tree)."""
+    try:
+        return str(path.relative_to(rig_root))
+    except ValueError:
+        return str(path)
+
+
 def build_index(config: RigConfig) -> int:
     """Rebuild `.ctx/index.db` from scratch. Returns the number of documents indexed."""
     config.ctx_dir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +83,7 @@ def build_index(config: RigConfig) -> int:
                 doc_id = doc.get("id")
                 if not doc_id:
                     continue
-                rel_path = str(path.relative_to(config.rig_root))
+                rel_path = _display_path(path, config.rig_root)
                 tags = _joined(fm.as_list(doc.get("tags")))
                 terms = _joined(fm.as_list(doc.get("terms")))
                 covers = _joined(fm.as_list(doc.get("covers")))
