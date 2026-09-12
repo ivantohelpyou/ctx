@@ -105,8 +105,19 @@ def search(
     query: str,
     corpus: str | None = None,
     history: bool = False,
+    decisions_corpora: list[str] | None = None,
 ) -> list[Hit]:
     """Run the FTS5 query, status-filtered before ranking, ranked by BM25.
+
+    `decisions_corpora` is the list of corpus NAMES configured with
+    `type: decisions` (the caller reads this from `RigConfig`, not this
+    module — `search()` only ever opens `index.db`). Lifecycle filtering
+    (status, the supersession graph) applies only to those corpora: an
+    explainer or shared doc has no lifecycle, and REGRESSED into vanishing
+    from default results (review finding, hq-sl5k round 2 — reproduced)
+    when a stray `supersedes:` in its own frontmatter, or in another doc's,
+    put it in `supersessions` at all. `None`/`[]` means no corpus in this
+    rig is type `decisions`, so nothing is lifecycle-filtered.
 
     Opens `index.db` read-only: a query never writes to it, so a read-only
     `.ctx/` directory (or a read-only filesystem) must not stop `ctx get` from
@@ -127,25 +138,26 @@ def search(
         if corpus:
             sql += " AND documents.corpus = ?"
             params.append(corpus)
-        if not history:
-            # Status filter before ranking (memo: "status beats score"). Only
-            # decisions carry a lifecycle status; anything else passes through.
-            #
-            # The GRAPH is the truth, not just the status column (review
-            # finding, hq-sl5k round 2): a decisions doc that omits `status:`
-            # entirely indexes with status NULL and used to pass this filter
-            # even when `supersessions` already says something replaced it —
-            # acceptance 2 ("a superseded decision is never returned without
-            # --history") broke on exactly that case. So a document is
-            # excluded here if EITHER its status says so, OR it has any
-            # successor edge at all, regardless of what its status column
-            # says — the second check is the one that doesn't trust status.
+        if not history and decisions_corpora:
+            # Status filter before ranking (memo: "status beats score"),
+            # PLUS the graph (the GRAPH is the truth, not just the status
+            # column — a decisions doc that omits `status:` entirely indexes
+            # NULL and would otherwise pass through even when `supersessions`
+            # already says something replaced it; acceptance 2 broke on
+            # exactly that). Both only ever apply to a `type: decisions`
+            # corpus — an explainer or shared doc is kept regardless of its
+            # own status/graph membership, which is the "or" branch below.
+            placeholders = ", ".join(["?"] * len(decisions_corpora))
             sql += (
-                " AND (documents.status IS NULL OR documents.status = 'accepted')"
-                " AND NOT EXISTS ("
-                "   SELECT 1 FROM supersessions s WHERE s.to_id = documents.id"
-                " )"
+                f" AND (documents.corpus NOT IN ({placeholders})"
+                " OR ("
+                "   (documents.status IS NULL OR documents.status = 'accepted')"
+                "   AND NOT EXISTS ("
+                "     SELECT 1 FROM supersessions s WHERE s.to_id = documents.id"
+                "   )"
+                " ))"
             )
+            params.extend(decisions_corpora)
         sql += " ORDER BY rank ASC, documents.id ASC"
         rows = conn.execute(sql, params).fetchall()
         hits = [
@@ -162,7 +174,12 @@ def search(
         if history:
             # Only --history ever surfaces a superseded hit, so only --history
             # pays for the walk (one bounded query per hit; see history.py).
+            # Same scoping as the exclusion above: a non-decisions hit never
+            # gets a lifecycle annotation, even if a stray graph row exists.
+            decisions_set = set(decisions_corpora or [])
             for h in hits:
+                if decisions_set and h.corpus not in decisions_set:
+                    continue
                 info = head_info(conn, h.id)
                 if info is not None:
                     h.superseded_by = info.heads

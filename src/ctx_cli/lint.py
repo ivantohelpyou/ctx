@@ -112,6 +112,22 @@ def _lint_common(spec: CorpusSpec, path: Path, doc: dict, errors: list[str]) -> 
         except fm.DateParseError:
             errors.append(f"{spec.name}:{rel}: unparseable '{field}' value: {value!r}")
 
+    # `supersedes:`/`superseded-by:` only mean anything in a `decisions`
+    # corpus — `ctx index` records them into the shared `supersessions` table
+    # regardless of corpus type, so a stray one in an explainer or shared doc
+    # silently joins the same graph a `decisions` corpus's lifecycle
+    # filtering reads (query.py's default `ctx get` exclusion used to apply
+    # globally and vanish an explainer named this way — round 2 review,
+    # reproduced). Caught here instead so the bad frontmatter is visible at
+    # the source, not just worked around at query time.
+    if spec.type != "decisions":
+        for field in ("supersedes", "superseded-by"):
+            if doc.get(field) or doc.get(field.replace("-", "_")):
+                errors.append(
+                    f"{spec.name}:{rel}: '{field}' is set, but this is not a "
+                    f"decisions corpus — lifecycle keys only valid in decisions corpora"
+                )
+
 
 def _resolve_covers_entry(
     config: RigConfig, spec: CorpusSpec, doc_path: Path, cover: str, errors: list[str]

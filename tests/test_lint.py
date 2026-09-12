@@ -46,6 +46,25 @@ def test_missing_required_field_is_an_error(rig_dir):
     assert any("missing required frontmatter field 'summary'" in e for e in report.errors)
 
 
+def test_lifecycle_keys_on_a_non_decisions_doc_are_an_error(rig_dir):
+    """`supersedes:`/`superseded-by:` only mean anything in a `decisions`
+    corpus — the round 2 review's reproduced regression was exactly a stray
+    one of these on an explainer, silently joining the shared supersession
+    graph `ctx get`'s default exclusion reads."""
+    explainer = rig_dir / "docs" / "explainers" / "001-fts5-choice.md"
+    text = explainer.read_text().replace(
+        "last-verified: 2026-09-12\n", "last-verified: 2026-09-12\nsupersedes: [adr-001]\n"
+    )
+    explainer.write_text(text)
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)
+    assert not report.ok
+    assert any(
+        "lifecycle keys only valid in decisions corpora" in e and "supersedes" in e
+        for e in report.errors
+    )
+
+
 def test_reciprocal_supersession_violation(rig_dir):
     adr1 = rig_dir / "docs" / "decisions" / "adr-001-two-databases.md"
     adr1.write_text(adr1.read_text().replace("superseded-by: [adr-002]", "superseded-by: []"))

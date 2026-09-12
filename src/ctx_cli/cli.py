@@ -138,7 +138,11 @@ def index_cmd(start_dir: Path | None, strict: bool):
     help="Max entries returned, regardless of budget.",
 )
 @click.option(
-    "--history", is_flag=True, default=False, help="Include superseded/non-accepted docs."
+    "--history",
+    is_flag=True,
+    default=False,
+    help="Include superseded/non-accepted docs, each annotated with what "
+    "replaced it ('(cycle)' if the supersession graph loops).",
 )
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
 def get_cmd(
@@ -149,15 +153,23 @@ def get_cmd(
     history: bool,
     start_dir: Path | None,
 ):
-    """Search the index; print a budgeted, deterministic result set."""
+    """Search the index; print a budgeted, deterministic result set. Warns
+    once on stderr (exit 0) if the supersession graph has a cycle."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
         config = load_config(ctx_dir)
     except (CtxNotFoundError, ValueError) as e:
         raise click.ClickException(str(e)) from e
+    decisions_corpora = [c.name for c in config.corpora if c.type == "decisions"]
     try:
         ensure_fresh_index(config)
-        hits = search(config.index_db_path, query, corpus=corpus, history=history)
+        hits = search(
+            config.index_db_path,
+            query,
+            corpus=corpus,
+            history=history,
+            decisions_corpora=decisions_corpora,
+        )
     except INDEX_ERRORS as e:
         raise click.ClickException(str(e)) from e
 
@@ -178,7 +190,8 @@ def get_cmd(
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
 def history_cmd(doc_id: str, start_dir: Path | None):
     """Print DOC_ID's supersession chain, oldest to newest, indenting a fork
-    and marking every current head."""
+    and marking every current head. If the graph loops, prints what it found,
+    then exits 2 with a 'cycle detected' message on stderr."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
         config = load_config(ctx_dir)

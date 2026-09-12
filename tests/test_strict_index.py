@@ -78,3 +78,21 @@ def test_ctx_index_strict_clean_fixture_exits_0(rig_dir):
     result = CliRunner().invoke(main, ["index", "--strict", "--dir", str(rig_dir)])
     assert result.exit_code == 0, result.output
     assert (rig_dir / ".ctx" / "index.db").exists()
+
+
+def test_lazy_rebuild_from_get_warns_too(rig_dir):
+    """`ctx index` isn't the only way a rebuild happens — `ctx get`/`ctx
+    history` lazily reindex a stale `index.db` and used to do it silently
+    (round 2 review): a corpus could drift out of structural shape for as
+    long as nobody ran `ctx index` or `ctx lint` by hand. Same warning, same
+    exit 0 — `--strict` stays an `index`-only, explicit refusal."""
+    # Build once so an index.db exists, then break reciprocity — the source
+    # file's new mtime makes the index stale, so the next `ctx get` rebuilds
+    # it lazily via ensure_fresh_index, not via `ctx index`.
+    CliRunner().invoke(main, ["index", "--dir", str(rig_dir)])
+    _break_reciprocity(rig_dir)
+
+    result = CliRunner().invoke(main, ["get", "database", "--dir", str(rig_dir)])
+    assert result.exit_code == 0, result.output
+    assert "decisions lint error" in result.output
+    assert "adr-002" in result.output  # hits still on stdout, not swallowed
