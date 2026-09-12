@@ -70,6 +70,36 @@ corpora:
     derive_id: true
 ```
 
+`map:` is validated at load time: an unknown target (a typo like `summry:`
+instead of `summary:`) is a config error naming the corpus and the bad key,
+not a silently-empty field; mapping `aliases:` into `tags:`/`terms:` is a
+config error for the same reason `aliases:` is left out of the hugo preset;
+the same target key twice under one corpus's `map:` is a config error too
+(most likely a copy-paste that meant two different targets), rather than
+YAML's usual last-one-silently-wins.
+
+**Precedence: the hand-authored key always wins.** If a document already has
+its own `summary:` (or `tags:`, `id:`, ...) — not empty — the map never
+overwrites it with the mapped source; it only fills a target the author left
+absent. A document that hand-writes `summary:` alongside Hugo's
+`description:` keeps the hand-written one.
+
+**`tags:`/`terms:` accept a comma-separated string, not just a YAML list** —
+Hugo's `keywords: "a, b, c"` and `keywords: ["a", "b", "c"]` index to the
+same tags either way (other list-shaped fields, like `covers:`, still treat
+a bare string as one value — a comma there could be part of a real path).
+
+**`type: hugo` skips drafts by default** — a document with a truthy `draft:`
+is excluded from indexing and lint's contract checks, matching what Hugo
+itself publishes; `ctx lint` reports how many were skipped, per corpus. Set
+`include_drafts: true` on the corpus to index them anyway.
+
+**`date:`/`last-verified:` normalize to `YYYY-MM-DD`** in the index, however
+they're written in frontmatter — a bare date, a full ISO datetime (its local
+calendar date, kept as written, never shifted for timezone), or a string in
+either shape. A value that doesn't parse as any of those is a `ctx lint`
+error, not a silently-malformed index value.
+
 ## Quick start
 
 ```bash
@@ -123,4 +153,7 @@ uv run pytest
 Covers: frontmatter parsing, index build, budgeted `ctx get` output, lint rules
 (explainer staleness/coverage, decision supersession/cycles, shared byte
 ceiling), checkpoint append, and byte-identity of `ctx get` output across a
-`rm index.db && ctx index` cycle.
+`rm index.db && ctx index` cycle. Also: `map:` validation (unknown target,
+`aliases:` into tags/terms, duplicate target key), hand-authored-key
+precedence, tags/terms comma-splitting, `type: hugo` draft-skipping, and
+`date`/`last-verified` normalization across date/datetime/string input.

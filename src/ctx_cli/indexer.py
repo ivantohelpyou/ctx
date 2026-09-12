@@ -23,7 +23,13 @@ import tempfile
 from pathlib import Path
 
 from . import frontmatter as fm
-from .corpus import CorpusSpec, RigConfig, iter_corpus_files, resolved_frontmatter
+from .corpus import (
+    CorpusSpec,
+    RigConfig,
+    is_draft_skipped,
+    iter_corpus_files,
+    resolved_frontmatter,
+)
 
 SCHEMA = """
 CREATE TABLE documents (
@@ -75,6 +81,19 @@ class DuplicateIdError(Exception):
 
 def _joined(values: list[str]) -> str:
     return " ".join(values)
+
+
+def _normalize_date_field(value):
+    """`date`/`last-verified` as stored in the index: `YYYY-MM-DD` when the
+    value parses (see `frontmatter.normalize_date`); otherwise fall back to
+    `str(value)` so one bad value doesn't fail the whole build — `ctx lint`
+    is what rejects it (re-i1n review, finding 6)."""
+    if value is None:
+        return None
+    try:
+        return fm.normalize_date(value)
+    except fm.DateParseError:
+        return str(value)
 
 
 def _display_path(path: Path, rig_root: Path) -> str:
@@ -150,6 +169,8 @@ def find_duplicate_ids(config: RigConfig) -> dict[str, list[str]]:
     for spec, path in _collect_source_files(config):
         raw = fm.parse_frontmatter(path.read_text(encoding="utf-8"))
         doc = resolved_frontmatter(spec, path, raw)
+        if doc and is_draft_skipped(spec, doc):
+            continue
         doc_id = doc.get("id") if doc else None
         if not doc_id:
             continue
@@ -193,15 +214,19 @@ def build_index(config: RigConfig) -> int:
                 doc = resolved_frontmatter(spec, path, raw)
                 if not doc:
                     continue
+                if is_draft_skipped(spec, doc):
+                    continue
                 doc_id = doc.get("id")
                 if not doc_id:
                     continue
                 rel_path = _display_path(path, config.rig_root)
-                tags = _joined(fm.as_list(doc.get("tags")))
-                terms = _joined(fm.as_list(doc.get("terms")))
+                tags = _joined(fm.as_tag_list(doc.get("tags")))
+                terms = _joined(fm.as_tag_list(doc.get("terms")))
                 covers = _joined(fm.as_list(doc.get("covers")))
-                date_val = doc.get("date")
-                last_verified = doc.get("last-verified") or doc.get("last_verified")
+                date_str = _normalize_date_field(doc.get("date"))
+                last_verified = _normalize_date_field(
+                    doc.get("last-verified") or doc.get("last_verified")
+                )
                 conn.execute(
                     "INSERT INTO documents "
                     "(id, corpus, path, title, status, date, summary, tags, terms, "
@@ -212,11 +237,11 @@ def build_index(config: RigConfig) -> int:
                         rel_path,
                         doc.get("title") or "",
                         doc.get("status"),
-                        str(date_val) if date_val is not None else None,
+                        date_str,
                         doc.get("summary") or "",
                         tags,
                         terms,
-                        str(last_verified) if last_verified is not None else None,
+                        last_verified,
                         covers,
                     ),
                 )

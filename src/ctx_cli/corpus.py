@@ -29,6 +29,56 @@ VALID_CORPUS_TYPES = ("explainers", "decisions", "shared", "hugo")
 # (plan §Decisions — research already uses `aliases:` for redirects).
 HUGO_FIELD_MAP = {"summary": "description", "tags": "keywords"}
 
+# Every target key `map:` is allowed to write to — the frontmatter contract
+# (README, plan §Schema) plus the decision-specific supersession keys. An
+# unknown target (a typo like `summry:`, or a made-up key) is a config error,
+# not a silently-ignored no-op (re-i1n review, findings 1a/4).
+VALID_MAP_TARGETS = frozenset(
+    {
+        "id",
+        "title",
+        "summary",
+        "tags",
+        "terms",
+        "date",
+        "status",
+        "last-verified",
+        "covers",
+        "supersedes",
+        "superseded-by",
+    }
+)
+
+# `aliases:` is Hugo's URL-redirect list, never search vocabulary. Mapping it
+# into either of ctx's vocabulary fields is a config error, not just an
+# omission from the hugo preset (re-i1n review, finding 1b).
+_ALIASES_FORBIDDEN_TARGETS = ("tags", "terms")
+
+
+class _DuplicateKeyLoader(yaml.SafeLoader):
+    """A YAML loader that rejects duplicate keys in any mapping, instead of
+    PyYAML's default of silently keeping only the last one. Used for
+    `config.yaml` itself (not the per-document frontmatter files, which are
+    unrelated and still use `yaml.safe_load`): a `map:` block with the same
+    target key twice — e.g. a copy-paste that meant to write two different
+    targets — must fail loudly, not silently pick whichever line came last
+    (re-i1n review, finding 1c)."""
+
+
+def _no_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict:
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=False)
+        if key in mapping:
+            raise ValueError(f"config.yaml: duplicate key {key!r} in the same mapping")
+        mapping[key] = loader.construct_object(value_node, deep=False)
+    return mapping
+
+
+_DuplicateKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys
+)
+
 
 class CtxNotFoundError(RuntimeError):
     pass
@@ -45,9 +95,16 @@ class CorpusSpec:
     # explicit `map:` in config.yaml may add to or override it for any type.
     field_map: dict[str, str] = dataclasses.field(default_factory=dict)
     # If true and a document has no `id` after `field_map` is applied,
-    # derive one from the file's path relative to the corpus root (stem,
-    # POSIX separators, no extension). Hugo docs don't carry an `id:` key.
+    # derive one from the file's path relative to the corpus root (every
+    # directory segment kept, POSIX separators, no `.md` extension). Hugo
+    # docs don't carry an `id:` key.
     derive_id: bool = False
+    # If true, a document with a truthy `draft:` is excluded from indexing,
+    # lint's contract checks, and duplicate-id detection — ctx must not
+    # surface what the public site hides. Defaults to true for `type: hugo`;
+    # `include_drafts: true` in config.yaml overrides it back to false for
+    # any corpus (re-i1n review, finding 5).
+    skip_drafts: bool = False
 
 
 @dataclasses.dataclass
@@ -81,10 +138,25 @@ def find_ctx_dir(start: Path | None = None) -> Path:
     )
 
 
+def _validate_field_map(corpus_name: str, field_map: dict[str, str]) -> None:
+    for target, source in field_map.items():
+        if target not in VALID_MAP_TARGETS:
+            raise ValueError(
+                f"corpus {corpus_name!r}: map target {target!r} is not a valid ctx "
+                f"frontmatter key (allowed: {sorted(VALID_MAP_TARGETS)})"
+            )
+        if source == "aliases" and target in _ALIASES_FORBIDDEN_TARGETS:
+            raise ValueError(
+                f"corpus {corpus_name!r}: 'aliases' cannot be mapped into {target!r} — "
+                "Hugo aliases are URL redirects, not search terms"
+            )
+
+
 def load_config(ctx_dir: Path | None = None) -> RigConfig:
     ctx_dir = ctx_dir or find_ctx_dir()
     rig_root = ctx_dir.parent
-    raw = yaml.safe_load((ctx_dir / CONFIG_FILENAME).read_text(encoding="utf-8")) or {}
+    text = (ctx_dir / CONFIG_FILENAME).read_text(encoding="utf-8")
+    raw = yaml.load(text, Loader=_DuplicateKeyLoader) or {}
     corpora = []
     for name, spec in (raw.get("corpora") or {}).items():
         ctype = spec.get("type", name)
@@ -98,7 +170,12 @@ def load_config(ctx_dir: Path | None = None) -> RigConfig:
         field_map = dict(HUGO_FIELD_MAP) if ctype == "hugo" else {}
         explicit_map = spec.get("map") or {}
         field_map.update({str(k): str(v) for k, v in explicit_map.items()})
+        _validate_field_map(name, field_map)
+
         derive_id = bool(spec.get("derive_id", ctype == "hugo"))
+        skip_drafts = ctype == "hugo"
+        if spec.get("include_drafts") is not None:
+            skip_drafts = not bool(spec["include_drafts"])
 
         corpora.append(
             CorpusSpec(
@@ -107,6 +184,7 @@ def load_config(ctx_dir: Path | None = None) -> RigConfig:
                 path=path.resolve(),
                 field_map=field_map,
                 derive_id=derive_id,
+                skip_drafts=skip_drafts,
             )
         )
     return RigConfig(rig_root=rig_root, ctx_dir=ctx_dir, corpora=corpora)
@@ -136,8 +214,15 @@ def iter_corpus_files(spec: CorpusSpec):
 
 def apply_field_map(raw: dict, field_map: dict[str, str]) -> dict:
     """Return the in-memory view ctx indexes/lints from a document's raw
-    frontmatter: for each `target: source` pair in `field_map`, if `source`
-    is present (and non-empty) in `raw`, copy its value onto `target`.
+    frontmatter: for each `target: source` pair in `field_map`, if `target`
+    is absent or empty in `raw`, fill it from `source` (when `source` is
+    itself present and non-empty).
+
+    The hand-authored key always wins: an explicit `summary:` already in the
+    file is the product — never generated, per the memo — so the map only
+    fills what the author didn't set, and never clobbers it with the mapped
+    source (re-i1n review, finding 2). A Hugo doc that hand-writes its own
+    `summary:` alongside `description:` keeps the hand-written one.
 
     Additive, not destructive: `raw` itself (and the file it came from) is
     never mutated, and `source` keys are left in place — so e.g. a Hugo
@@ -148,6 +233,8 @@ def apply_field_map(raw: dict, field_map: dict[str, str]) -> dict:
         return raw
     mapped = dict(raw)
     for target, source in field_map.items():
+        if raw.get(target) not in (None, "", []):
+            continue  # hand-authored: wins, never overwritten by the map
         value = raw.get(source)
         if value not in (None, "", []):
             mapped[target] = value
@@ -156,10 +243,19 @@ def apply_field_map(raw: dict, field_map: dict[str, str]) -> dict:
 
 def derive_id_from_path(spec: CorpusSpec, path: Path) -> str:
     """`id` for a document that doesn't set one: its path relative to the
-    corpus root, stem only (no `.md`), POSIX separators — stable, and
-    globally unique as long as no two corpora share a relative path."""
+    corpus root with the `.md` suffix removed — every directory segment
+    kept (e.g. `survey/1-241`, not just `1-241`), POSIX separators. Directory
+    segments are kept on purpose: `a/index.md` and `b/index.md` must not
+    collide on a bare stem (re-i1n review, finding 7). Stable, and globally
+    unique as long as no two corpora share a relative path."""
     rel = path.resolve().relative_to(spec.path.resolve())
     return rel.with_suffix("").as_posix()
+
+
+def is_draft_skipped(spec: CorpusSpec, doc: dict) -> bool:
+    """True if `doc` is a draft this corpus is configured to hide — ctx must
+    not surface what the public site hides (re-i1n review, finding 5)."""
+    return bool(spec.skip_drafts) and bool(doc.get("draft"))
 
 
 def resolved_frontmatter(spec: CorpusSpec, path: Path, raw: dict) -> dict:

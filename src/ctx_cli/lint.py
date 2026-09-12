@@ -20,7 +20,13 @@ from datetime import datetime
 from pathlib import Path
 
 from . import frontmatter as fm
-from .corpus import CorpusSpec, RigConfig, iter_corpus_files, resolved_frontmatter
+from .corpus import (
+    CorpusSpec,
+    RigConfig,
+    is_draft_skipped,
+    iter_corpus_files,
+    resolved_frontmatter,
+)
 
 # "small enough to be cheap to load from every rig" (memo) — a placeholder
 # ceiling until a real budget is set; ctx lint reports the measured size either way.
@@ -31,6 +37,10 @@ SHARED_BYTE_CEILING = 200_000
 class LintReport:
     errors: list[str] = dataclasses.field(default_factory=list)
     coverage: dict[str, float] = dataclasses.field(default_factory=dict)
+    # Per-corpus count of documents excluded because `draft:` is truthy and
+    # the corpus is configured to skip drafts (re-i1n review, finding 5) —
+    # not an error, just visibility into what ctx is not indexing.
+    skipped_drafts: dict[str, int] = dataclasses.field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -87,6 +97,20 @@ def _lint_common(spec: CorpusSpec, path: Path, doc: dict, errors: list[str]) -> 
     for field in ("id", "title", "summary"):
         if not doc.get(field):
             errors.append(f"{spec.name}:{rel}: missing required frontmatter field '{field}'")
+
+    # date / last-verified must be parseable if present at all — an
+    # unparseable value silently degraded to a raw string in the index
+    # before this was caught anywhere (re-i1n review, finding 6).
+    for field, value in (
+        ("date", doc.get("date")),
+        ("last-verified", doc.get("last-verified") or doc.get("last_verified")),
+    ):
+        if value is None:
+            continue
+        try:
+            fm.normalize_date(value)
+        except fm.DateParseError:
+            errors.append(f"{spec.name}:{rel}: unparseable '{field}' value: {value!r}")
 
 
 def _resolve_covers_entry(
@@ -223,7 +247,11 @@ def lint(config: RigConfig) -> LintReport:
     report = LintReport()
     seen_ids: dict[str, list[str]] = {}
     for spec in config.corpora:
-        docs = _load_docs(spec)
+        all_docs = _load_docs(spec)
+        draft_paths = {path for path, doc in all_docs if doc and is_draft_skipped(spec, doc)}
+        report.skipped_drafts[spec.name] = len(draft_paths)
+        docs = [(path, doc) for path, doc in all_docs if path not in draft_paths]
+
         for path, doc in docs:
             if not doc:
                 report.errors.append(f"{spec.name}:{path}: no parseable frontmatter")
