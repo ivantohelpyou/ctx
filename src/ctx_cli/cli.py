@@ -86,9 +86,9 @@ def index_cmd(start_dir: Path | None):
     """Rebuild index.db from frontmatter (full rebuild, not incremental)."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
-    except CtxNotFoundError as e:
+        config = load_config(ctx_dir)
+    except (CtxNotFoundError, ValueError) as e:
         raise click.ClickException(str(e)) from e
-    config = load_config(ctx_dir)
     try:
         count = build_index(config)
     except INDEX_ERRORS as e:
@@ -123,9 +123,9 @@ def get_cmd(
     """Search the index; print a budgeted, deterministic result set."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
-    except CtxNotFoundError as e:
+        config = load_config(ctx_dir)
+    except (CtxNotFoundError, ValueError) as e:
         raise click.ClickException(str(e)) from e
-    config = load_config(ctx_dir)
     try:
         ensure_fresh_index(config)
         hits = search(config.index_db_path, query, corpus=corpus, history=history)
@@ -146,9 +146,9 @@ def lint_cmd(start_dir: Path | None):
     """Check frontmatter contract + supersession graph integrity."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
-    except CtxNotFoundError as e:
+        config = load_config(ctx_dir)
+    except (CtxNotFoundError, ValueError) as e:
         raise click.ClickException(str(e)) from e
-    config = load_config(ctx_dir)
     report = run_lint(config)
 
     for name, pct in report.coverage.items():
@@ -171,9 +171,9 @@ def checkpoint_cmd(note: str, start_dir: Path | None):
     """Append NOTE to .ctx/checkpoints/current.md."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
-    except CtxNotFoundError as e:
+        config = load_config(ctx_dir)
+    except (CtxNotFoundError, ValueError) as e:
         raise click.ClickException(str(e)) from e
-    config = load_config(ctx_dir)
     path = checkpoint_mod.append_checkpoint(config, note)
     click.echo(f"appended to {path}")
 

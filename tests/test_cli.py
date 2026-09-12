@@ -56,3 +56,23 @@ def test_get_without_ctx_dir_fails_clearly(tmp_path):
     result = runner.invoke(main, ["get", "anything", "--dir", str(tmp_path)])
     assert result.exit_code != 0
     assert "ctx init" in result.output
+
+
+def test_index_with_invalid_map_config_exits_cleanly_no_traceback(rig_dir):
+    """re-i1n round-2 review: a config-validation ValueError (unknown map
+    target, here) must exit through the same clean one-line path as any
+    other known error — never a raw traceback."""
+    (rig_dir / ".ctx" / "config.yaml").write_text(
+        "corpora:\n"
+        "  docs:\n"
+        "    type: hugo\n"
+        "    path: docs/hugo\n"
+        "    map:\n"
+        "      summry: description\n"
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["index", "--dir", str(rig_dir)])
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert result.output.count("Error:") == 1
+    assert "summry" in result.output
