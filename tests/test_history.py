@@ -7,7 +7,13 @@ import sqlite3
 from click.testing import CliRunner
 
 from ctx_cli.cli import main
-from ctx_cli.history import chain, direct_predecessors, direct_successors, head_info, head_of
+from ctx_cli.history import (
+    direct_predecessors,
+    direct_successors,
+    head_info,
+    head_of,
+    history_view,
+)
 from ctx_cli.indexer import build_index
 
 
@@ -60,26 +66,53 @@ def _add_fanin_docs(rig_dir):
     )
 
 
-def test_chain_excludes_siblings_reached_only_via_a_shared_successor(config, rig_dir):
-    _add_fanin_docs(rig_dir)
-    build_index(config)
-    conn = sqlite3.connect(config.index_db_path)
-    try:
-        entries = chain(conn, "sibling-a")
-    finally:
-        conn.close()
-    assert {e.id for e in entries} == {"sibling-a", "hub"}
+def _add_split_docs(rig_dir):
+    """One-to-many (a fork): split-x AND split-y both directly supersede
+    split-0 — lint permits this (reciprocity is checked per entry, not
+    capped at one predecessor). Round 2 review fixture: the first walker
+    followed only `direct_successors()[0]`, silently dropping split-y."""
+    decisions = rig_dir / "docs" / "decisions"
+    (decisions / "split-0.md").write_text(
+        "---\nid: split-0\ntitle: Split point\nsummary: the document that forked.\n"
+        "status: superseded\ndate: 2026-01-01\n"
+        "supersedes: []\nsuperseded-by: [split-x, split-y]\n---\n"
+    )
+    (decisions / "split-x.md").write_text(
+        "---\nid: split-x\ntitle: One branch\nsummary: one of the two successors.\n"
+        "status: accepted\ndate: 2026-02-01\n"
+        "supersedes: [split-0]\nsuperseded-by: []\n---\n"
+    )
+    (decisions / "split-y.md").write_text(
+        "---\nid: split-y\ntitle: The other branch\nsummary: the other successor.\n"
+        "status: accepted\ndate: 2026-02-02\n"
+        "supersedes: [split-0]\nsuperseded-by: []\n---\n"
+    )
 
 
-def test_chain_on_the_consolidator_includes_every_absorbed_sibling(config, rig_dir):
-    _add_fanin_docs(rig_dir)
-    build_index(config)
+def _add_cycle_docs(rig_dir):
+    """A pure two-node cycle, injected directly into the index's
+    `supersessions` table (never through frontmatter — lint would reject
+    it) to prove the walker doesn't just hang or silently return nothing."""
+    decisions = rig_dir / "docs" / "decisions"
+    (decisions / "loop-a.md").write_text(
+        "---\nid: loop-a\ntitle: Loop A\nsummary: part of an injected cycle.\n"
+        "status: superseded\ndate: 2026-01-01\n"
+        "supersedes: []\nsuperseded-by: [loop-b]\n---\n"
+    )
+    (decisions / "loop-b.md").write_text(
+        "---\nid: loop-b\ntitle: Loop B\nsummary: the other half of the cycle.\n"
+        "status: superseded\ndate: 2026-01-02\n"
+        "supersedes: [loop-a]\nsuperseded-by: []\n---\n"
+    )
+
+
+def _inject_cycle(config):
+    """loop-b's frontmatter has no successor; add the closing edge straight
+    into the built index, bypassing lint — a hand-edited/corrupt index."""
     conn = sqlite3.connect(config.index_db_path)
-    try:
-        entries = chain(conn, "hub")
-    finally:
-        conn.close()
-    assert {e.id for e in entries} == {"sibling-a", "sibling-b", "hub"}
+    conn.execute("INSERT INTO supersessions (from_id, to_id) VALUES ('loop-a', 'loop-b')")
+    conn.commit()
+    conn.close()
 
 
 def test_direct_successors_and_predecessors(config, rig_dir):
@@ -100,9 +133,19 @@ def test_head_of_walks_to_the_end_of_the_chain(config, rig_dir):
     build_index(config)
     conn = sqlite3.connect(config.index_db_path)
     try:
-        assert head_of(conn, "chain-a") == "chain-c"
-        assert head_of(conn, "chain-b") == "chain-c"
-        assert head_of(conn, "chain-c") == "chain-c"  # already the head
+        assert head_of(conn, "chain-a") == ["chain-c"]
+        assert head_of(conn, "chain-b") == ["chain-c"]
+        assert head_of(conn, "chain-c") == ["chain-c"]  # already the head
+    finally:
+        conn.close()
+
+
+def test_head_of_returns_every_head_on_a_fork(config, rig_dir):
+    _add_split_docs(rig_dir)
+    build_index(config)
+    conn = sqlite3.connect(config.index_db_path)
+    try:
+        assert head_of(conn, "split-0") == ["split-x", "split-y"]
     finally:
         conn.close()
 
@@ -113,31 +156,66 @@ def test_head_info_none_when_not_superseded(config, rig_dir):
     conn = sqlite3.connect(config.index_db_path)
     try:
         assert head_info(conn, "chain-c") is None
-        assert head_info(conn, "chain-a") == ("chain-c", "Chain C (current)")
+        info = head_info(conn, "chain-a")
+        assert info.heads == [("chain-c", "Chain C (current)")]
+        assert info.cycle is False
     finally:
         conn.close()
 
 
-def test_head_of_terminates_on_a_cycle_in_a_corrupt_index(config, rig_dir):
-    """The walker must not assume the index in front of it passed lint —
-    only `ctx lint` rejects cycles, and only for documents that came through
-    `ctx index`. A hand-edited `index.db` can still contain one."""
-    _add_chain_docs(rig_dir)
+def test_head_info_lists_every_head_on_a_fork(config, rig_dir):
+    _add_split_docs(rig_dir)
     build_index(config)
     conn = sqlite3.connect(config.index_db_path)
     try:
-        # chain-c already points nowhere; force a cycle chain-a -> chain-b ->
-        # chain-c -> chain-a directly in the table, bypassing lint entirely.
-        conn.execute("INSERT INTO supersessions (from_id, to_id) VALUES ('chain-a', 'chain-c')")
-        conn.commit()
-        # Must return, not loop forever.
-        result = head_of(conn, "chain-a")
-        assert result in {"chain-a", "chain-b", "chain-c"}
+        info = head_info(conn, "split-0")
+        assert info.heads == [("split-x", "One branch"), ("split-y", "The other branch")]
+        assert info.cycle is False
     finally:
         conn.close()
 
 
-def test_chain_dangling_id_is_skipped_not_raised(config, rig_dir):
+def test_head_of_and_head_info_report_a_cycle(config, rig_dir):
+    """The walker must not assume the index in front of it passed lint —
+    only `ctx lint` rejects cycles, and only for documents that came through
+    `ctx index`. A hand-edited `index.db` can still contain one, and it must
+    be reported, not silently resolved to nothing."""
+    _add_cycle_docs(rig_dir)
+    build_index(config)
+    _inject_cycle(config)
+    conn = sqlite3.connect(config.index_db_path)
+    try:
+        assert head_of(conn, "loop-a") == []  # no real head — pure cycle
+        info = head_info(conn, "loop-a")
+        assert info.cycle is True
+    finally:
+        conn.close()
+
+
+def test_history_view_excludes_siblings_reached_only_via_a_shared_successor(config, rig_dir):
+    _add_fanin_docs(rig_dir)
+    build_index(config)
+    conn = sqlite3.connect(config.index_db_path)
+    try:
+        lines, cycle = history_view(conn, "sibling-a")
+    finally:
+        conn.close()
+    assert {ln.id for ln in lines} == {"sibling-a", "hub"}
+    assert cycle is None
+
+
+def test_history_view_on_the_consolidator_includes_every_absorbed_sibling(config, rig_dir):
+    _add_fanin_docs(rig_dir)
+    build_index(config)
+    conn = sqlite3.connect(config.index_db_path)
+    try:
+        lines, _cycle = history_view(conn, "hub")
+    finally:
+        conn.close()
+    assert {ln.id for ln in lines} == {"sibling-a", "sibling-b", "hub"}
+
+
+def test_history_view_dangling_id_is_skipped_not_raised(config, rig_dir):
     """A supersessions row naming a document that isn't in `documents` (a
     corrupt index, or a row left behind by manual editing) must not raise —
     the walker skips what it can't resolve."""
@@ -147,32 +225,70 @@ def test_chain_dangling_id_is_skipped_not_raised(config, rig_dir):
     try:
         conn.execute("INSERT INTO supersessions (from_id, to_id) VALUES ('ghost-id', 'chain-c')")
         conn.commit()
-        entries = chain(conn, "chain-c")
-        assert all(e.id != "ghost-id" for e in entries)
+        lines, _cycle = history_view(conn, "chain-c")
+        assert all(ln.id != "ghost-id" for ln in lines)
     finally:
         conn.close()
 
 
-def test_chain_oldest_to_newest_marks_head(config, rig_dir):
+def test_history_view_oldest_to_newest_marks_head(config, rig_dir):
     _add_chain_docs(rig_dir)
     build_index(config)
     conn = sqlite3.connect(config.index_db_path)
     try:
-        entries = chain(conn, "chain-a")
+        lines, cycle = history_view(conn, "chain-a")
     finally:
         conn.close()
-    assert [e.id for e in entries] == ["chain-a", "chain-b", "chain-c"]
-    assert [e.is_head for e in entries] == [False, False, True]
+    assert [ln.id for ln in lines] == ["chain-a", "chain-b", "chain-c"]
+    assert [ln.is_head for ln in lines] == [False, False, True]
+    # A plain, non-forking chain never indents — depth marks a branch, not a
+    # hop count.
+    assert [ln.depth for ln in lines] == [0, 0, 0]
+    assert cycle is None
 
 
-def test_chain_empty_for_unknown_id(config, rig_dir):
+def test_history_view_indents_a_fork_and_marks_both_heads(config, rig_dir):
+    _add_split_docs(rig_dir)
+    build_index(config)
+    conn = sqlite3.connect(config.index_db_path)
+    try:
+        lines, cycle = history_view(conn, "split-0")
+    finally:
+        conn.close()
+    by_id = {ln.id: ln for ln in lines}
+    assert by_id["split-0"].depth == 0
+    assert by_id["split-0"].is_head is False
+    assert by_id["split-x"].depth == 1
+    assert by_id["split-y"].depth == 1
+    assert by_id["split-x"].is_head is True
+    assert by_id["split-y"].is_head is True
+    assert cycle is None
+
+
+def test_history_view_reports_the_cycle(config, rig_dir):
+    _add_cycle_docs(rig_dir)
+    build_index(config)
+    _inject_cycle(config)
+    conn = sqlite3.connect(config.index_db_path)
+    try:
+        lines, cycle = history_view(conn, "loop-a")
+    finally:
+        conn.close()
+    assert lines  # doesn't come back empty just because of the cycle
+    assert cycle is not None
+    assert "loop-a" in cycle and "loop-b" in cycle
+
+
+def test_history_view_empty_for_unknown_id(config, rig_dir):
     _add_chain_docs(rig_dir)
     build_index(config)
     conn = sqlite3.connect(config.index_db_path)
     try:
-        assert chain(conn, "does-not-exist") == []
+        lines, cycle = history_view(conn, "does-not-exist")
     finally:
         conn.close()
+    assert lines == []
+    assert cycle is None
 
 
 def test_cli_history_prints_oldest_to_newest(rig_dir):
@@ -188,8 +304,35 @@ def test_cli_history_prints_oldest_to_newest(rig_dir):
     assert "<- current" not in lines[1]
 
 
+def test_cli_history_indents_a_fork(rig_dir):
+    _add_split_docs(rig_dir)
+    result = CliRunner().invoke(main, ["history", "split-0", "--dir", str(rig_dir)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    root = next(ln for ln in lines if ln.startswith("split-0"))
+    branches = [ln for ln in lines if "split-x" in ln or "split-y" in ln]
+    assert not root.startswith("  ")
+    assert len(branches) == 2
+    assert all(ln.startswith("  ") for ln in branches)
+    assert all("<- current" in ln for ln in branches)
+    # deterministic order by id
+    assert "split-x" in lines[1] and "split-y" in lines[2]
+
+
 def test_cli_history_unknown_id_errors_cleanly(rig_dir):
     result = CliRunner().invoke(main, ["history", "no-such-id", "--dir", str(rig_dir)])
     assert result.exit_code != 0
     assert "Traceback" not in result.output
     assert "no-such-id" in result.output
+
+
+def test_cli_history_cycle_exits_2_and_warns_on_stderr(config, rig_dir):
+    _add_cycle_docs(rig_dir)
+    build_index(config)
+    _inject_cycle(config)
+
+    result = CliRunner().invoke(main, ["history", "loop-a", "--dir", str(rig_dir)])
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output
+    assert "cycle detected" in result.output
+    assert "loop-a" in result.output

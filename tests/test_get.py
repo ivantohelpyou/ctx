@@ -1,3 +1,4 @@
+import sqlite3
 import stat
 import time
 
@@ -39,9 +40,10 @@ def test_history_flag_annotates_superseded_hit_with_chain_head(config):
     build_index(config)
     history_hits = search(config.index_db_path, "database", corpus="decisions", history=True)
     adr1 = next(h for h in history_hits if h.id == "adr-001")
-    assert adr1.superseded_by == ("adr-002", "Two database files, built with SEA")
+    assert adr1.superseded_by == [("adr-002", "Two database files, built with SEA")]
+    assert adr1.cycle is False
     adr2 = next(h for h in history_hits if h.id == "adr-002")
-    assert adr2.superseded_by is None  # adr-002 is current, nothing replaced it
+    assert adr2.superseded_by == []  # adr-002 is current, nothing replaced it
 
     output = render(*apply_budget(history_hits, DEFAULT_BUDGET))
     assert "  superseded-by: adr-002 — Two database files, built with SEA" in output
@@ -50,7 +52,116 @@ def test_history_flag_annotates_superseded_hit_with_chain_head(config):
 def test_without_history_flag_no_annotation_and_no_walker_cost_for_accepted_hit(config):
     build_index(config)
     default_hits = search(config.index_db_path, "database", corpus="decisions")
-    assert all(h.superseded_by is None for h in default_hits)
+    assert all(h.superseded_by == [] for h in default_hits)
+
+
+def test_default_get_excludes_superseded_doc_with_no_status(config):
+    """Acceptance 2 broke on exactly this shape (round 2 review): a decisions
+    doc that omits `status:` entirely indexes with status NULL, which the
+    status-only filter used to let straight through even though the graph
+    already says something replaced it. The graph is checked regardless of
+    status now."""
+    decisions = config.rig_root / "docs" / "decisions"
+    # adr-001 is superseded by adr-002 in the fixture; add a document with NO
+    # status at all that adr-002 also supersedes, so the graph — not the
+    # status column — is the only thing that could exclude it.
+    (decisions / "adr-000-no-status.md").write_text(
+        "---\nid: adr-000\ntitle: No status at all, but superseded\n"
+        "summary: omits status entirely.\ndate: 2026-08-30\n"
+        "supersedes: []\nsuperseded-by: [adr-002]\n---\n"
+    )
+    old_text = (decisions / "adr-002-two-databases-sea.md").read_text()
+    (decisions / "adr-002-two-databases-sea.md").write_text(
+        old_text.replace("supersedes: [adr-001]", "supersedes: [adr-001, adr-000]")
+    )
+    build_index(config)
+
+    default_hits = search(config.index_db_path, "status", corpus="decisions")
+    assert all(h.id != "adr-000" for h in default_hits)
+
+    history_hits = search(config.index_db_path, "status", corpus="decisions", history=True)
+    adr0 = next(h for h in history_hits if h.id == "adr-000")
+    assert adr0.superseded_by == [("adr-002", "Two database files, built with SEA")]
+
+
+def test_history_flag_lists_every_head_on_a_fork(config):
+    decisions = config.rig_root / "docs" / "decisions"
+    (decisions / "split-0.md").write_text(
+        "---\nid: split-0\ntitle: Split point\nsummary: forks into two.\n"
+        "status: superseded\ndate: 2026-01-01\n"
+        "supersedes: []\nsuperseded-by: [split-x, split-y]\n---\n"
+    )
+    (decisions / "split-x.md").write_text(
+        "---\nid: split-x\ntitle: One branch\nsummary: one successor.\n"
+        "status: accepted\ndate: 2026-02-01\n"
+        "supersedes: [split-0]\nsuperseded-by: []\n---\n"
+    )
+    (decisions / "split-y.md").write_text(
+        "---\nid: split-y\ntitle: The other branch\nsummary: the other successor.\n"
+        "status: accepted\ndate: 2026-02-02\n"
+        "supersedes: [split-0]\nsuperseded-by: []\n---\n"
+    )
+    build_index(config)
+
+    history_hits = search(config.index_db_path, "forks into two", corpus="decisions", history=True)
+    split0 = next(h for h in history_hits if h.id == "split-0")
+    assert split0.superseded_by == [
+        ("split-x", "One branch"),
+        ("split-y", "The other branch"),
+    ]
+    output = render(*apply_budget(history_hits, DEFAULT_BUDGET))
+    assert "  superseded-by: split-x — One branch; split-y — The other branch" in output
+
+
+def test_history_flag_annotates_a_cycle_and_never_lists_heads_alongside_it(config):
+    decisions = config.rig_root / "docs" / "decisions"
+    (decisions / "loop-a.md").write_text(
+        "---\nid: loop-a\ntitle: Loop A\nsummary: part of an injected cycle.\n"
+        "status: superseded\ndate: 2026-01-01\n"
+        "supersedes: []\nsuperseded-by: [loop-b]\n---\n"
+    )
+    (decisions / "loop-b.md").write_text(
+        "---\nid: loop-b\ntitle: Loop B\nsummary: the other half of the cycle.\n"
+        "status: superseded\ndate: 2026-01-02\n"
+        "supersedes: [loop-a]\nsuperseded-by: []\n---\n"
+    )
+    build_index(config)
+    conn = sqlite3.connect(config.index_db_path)
+    conn.execute("INSERT INTO supersessions (from_id, to_id) VALUES ('loop-a', 'loop-b')")
+    conn.commit()
+    conn.close()
+
+    history_hits = search(config.index_db_path, "injected cycle", corpus="decisions", history=True)
+    loop_a = next(h for h in history_hits if h.id == "loop-a")
+    assert loop_a.cycle is True
+    output = render(*apply_budget(history_hits, DEFAULT_BUDGET))
+    assert "  superseded-by: (cycle)" in output
+
+
+def test_cli_get_history_warns_once_on_stderr_for_a_cycle(rig_dir):
+    decisions = rig_dir / "docs" / "decisions"
+    (decisions / "loop-a.md").write_text(
+        "---\nid: loop-a\ntitle: Loop A\nsummary: part of an injected cycle.\n"
+        "status: superseded\ndate: 2026-01-01\n"
+        "supersedes: []\nsuperseded-by: [loop-b]\n---\n"
+    )
+    (decisions / "loop-b.md").write_text(
+        "---\nid: loop-b\ntitle: Loop B\nsummary: the other half of the cycle.\n"
+        "status: superseded\ndate: 2026-01-02\n"
+        "supersedes: [loop-a]\nsuperseded-by: []\n---\n"
+    )
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    conn = sqlite3.connect(config.index_db_path)
+    conn.execute("INSERT INTO supersessions (from_id, to_id) VALUES ('loop-a', 'loop-b')")
+    conn.commit()
+    conn.close()
+
+    result = CliRunner().invoke(
+        main, ["get", "injected cycle", "--corpus", "decisions", "--history", "--dir", str(rig_dir)]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.output.count("index is corrupt") == 1
 
 
 def test_byte_identical_history_output_after_rm_and_reindex(config):

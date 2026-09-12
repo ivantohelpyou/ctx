@@ -6,11 +6,19 @@ populates: one row per `supersedes:` entry, `from_id` = the newer document,
 `to_id` = the one it replaced (see `indexer.build_index`). `ctx lint` already
 rejects cycles and unreciprocated links in a document set that came through
 `ctx index` — but this module reads `index.db` directly and must not assume
-the index in front of it passed lint. Every walk here is visited-set bounded
-and terminates on a corrupt or hand-edited index: a cycle stops the walk
-rather than looping forever, and a dangling id (referenced by a
-`supersessions` row but with no matching `documents` row) is skipped rather
-than raising.
+the index in front of it passed lint. Every walk here is path-visited-set
+bounded and terminates on a corrupt or hand-edited index: a successor already
+on the current path is a cycle, not followed further, and reported rather
+than silently swallowed (review finding, hq-sl5k round 2) — a dangling id
+(referenced by a `supersessions` row but with no matching `documents` row)
+is skipped rather than raising.
+
+`head_of` is plural on purpose: lint allows a document to be superseded by
+more than one other (`superseded-by:` reciprocity is checked per entry, not
+capped at one), so a fork is valid data, not corruption — round 2's
+`split-0`/`split-x`/`split-y` fixture. The first version of this module
+followed only `direct_successors()[0]`, silently dropping every sibling
+fork; every walk here now follows all of them.
 """
 
 from __future__ import annotations
@@ -20,8 +28,9 @@ import sqlite3
 
 
 def direct_successors(conn: sqlite3.Connection, doc_id: str) -> list[str]:
-    """Documents that directly supersede `doc_id` — normally zero or one,
-    but not enforced here (lint's job); sorted for a deterministic walk."""
+    """Documents that directly supersede `doc_id` — one-to-many is valid
+    data (a fork), not enforced down to one here or by lint; sorted for a
+    deterministic walk."""
     rows = conn.execute(
         "SELECT from_id FROM supersessions WHERE to_id = ? ORDER BY from_id", (doc_id,)
     ).fetchall()
@@ -37,33 +46,72 @@ def direct_predecessors(conn: sqlite3.Connection, doc_id: str) -> list[str]:
     return [r[0] for r in rows]
 
 
-def head_of(conn: sqlite3.Connection, doc_id: str) -> str:
-    """Walk forward via `direct_successors`, deterministically (smallest id
-    first when more than one), until a document with no successor — the
-    current head of `doc_id`'s chain. Returns `doc_id` itself if it has no
-    successor. Cycle-safe: a successor already visited stops the walk at the
-    node before it, rather than looping."""
-    current = doc_id
-    visited = {doc_id}
-    while True:
+@dataclasses.dataclass
+class HeadWalk:
+    heads: list[str]  # sorted, deduped; every true leaf reachable forward
+    cycle: bool  # a successor edge pointed back onto the current path
+
+
+def walk_heads(conn: sqlite3.Connection, doc_id: str) -> HeadWalk:
+    """DFS over every forward branch from `doc_id`. A document with zero
+    successors is a head, wherever it's reached from. A successor already on
+    the path being walked is a cycle: that branch stops there (so the walk
+    always terminates, even on a hand-edited index with a loop in it) and
+    `cycle=True` is set on the result — it is NOT counted as a head, because
+    it does have an outgoing edge, just one this walk refuses to follow.
+    `doc_id` itself is the (only) head when it has no successor at all,
+    matching "not superseded"."""
+    heads: list[str] = []
+    cycle = False
+
+    def visit(current: str, path: tuple[str, ...]) -> None:
+        nonlocal cycle
         successors = direct_successors(conn, current)
-        if not successors:
-            return current
-        nxt = successors[0]
-        if nxt in visited:
-            return current
-        visited.add(nxt)
-        current = nxt
+        live = []
+        for s in successors:
+            if s in path:
+                cycle = True
+                continue
+            live.append(s)
+        if not live:
+            if not successors:
+                heads.append(current)
+            return
+        for nxt in live:
+            visit(nxt, (*path, nxt))
+
+    visit(doc_id, (doc_id,))
+    return HeadWalk(heads=sorted(set(heads)), cycle=cycle)
 
 
-def head_info(conn: sqlite3.Connection, doc_id: str) -> tuple[str, str] | None:
-    """`(head_id, head_title)` if `doc_id` has been superseded (its chain's
-    head is not itself), else None."""
-    head_id = head_of(conn, doc_id)
-    if head_id == doc_id:
+def head_of(conn: sqlite3.Connection, doc_id: str) -> list[str]:
+    """Every head reachable forward from `doc_id`, sorted by id. `[doc_id]`
+    if it has no successor at all (nothing replaced it)."""
+    return walk_heads(conn, doc_id).heads
+
+
+@dataclasses.dataclass
+class HeadInfo:
+    heads: list[tuple[str, str]]  # (id, title), sorted by id — every head, not just one
+    cycle: bool
+
+
+def head_info(conn: sqlite3.Connection, doc_id: str) -> HeadInfo | None:
+    """`doc_id`'s heads (id, title pairs) if it has been superseded, else
+    None. `cycle=True` means the walk hit a loop; `heads` may still be
+    non-empty (a real head reached by one branch, a cycle on another) — a
+    caller that wants to report a cycle unambiguously (query.py's `(cycle)`
+    annotation) should check `.cycle` first, before consulting `.heads`."""
+    walk = walk_heads(conn, doc_id)
+    if walk.heads == [doc_id] and not walk.cycle:
         return None
-    row = conn.execute("SELECT title FROM documents WHERE id = ?", (head_id,)).fetchone()
-    return head_id, (row[0] if row else "")
+    pairs = []
+    for hid in walk.heads:
+        if hid == doc_id:
+            continue
+        row = conn.execute("SELECT title FROM documents WHERE id = ?", (hid,)).fetchone()
+        pairs.append((hid, row[0] if row else ""))
+    return HeadInfo(heads=sorted(pairs), cycle=walk.cycle)
 
 
 def _document_row(conn: sqlite3.Connection, doc_id: str) -> dict | None:
@@ -73,29 +121,6 @@ def _document_row(conn: sqlite3.Connection, doc_id: str) -> dict | None:
     if row is None:
         return None
     return {"id": row[0], "title": row[1] or "", "status": row[2], "date": row[3]}
-
-
-def _forward_path(conn: sqlite3.Connection, doc_id: str) -> list[str]:
-    """`doc_id`, then its successor, then that one's, deterministically
-    (smallest id first on a fork), to the head. A single path — it must NOT
-    also pull in a successor's OTHER predecessors, or asking about one of
-    nine positions a later box consolidated would return all nine (real
-    data: pos-93 alone absorbed nine others). Cycle-safe like `head_of`,
-    which this duplicates rather than calls, so a caller wanting only the
-    head isn't paying for a list it discards."""
-    path = [doc_id]
-    visited = {doc_id}
-    current = doc_id
-    while True:
-        successors = direct_successors(conn, current)
-        if not successors:
-            return path
-        nxt = successors[0]
-        if nxt in visited:
-            return path
-        visited.add(nxt)
-        path.append(nxt)
-        current = nxt
 
 
 def _backward_tree(
@@ -118,41 +143,60 @@ def _backward_tree(
 
 
 @dataclasses.dataclass
-class ChainEntry:
+class TreeLine:
     id: str
     title: str
     status: str | None
     date: str | None
+    depth: int  # 0 for every backward ancestor and doc_id itself; +1 per forward hop
     is_head: bool
 
 
-def chain(conn: sqlite3.Connection, doc_id: str) -> list[ChainEntry]:
-    """`doc_id`'s own supersession chain, oldest to newest (sorted by date,
-    then id — undated entries sort first, alongside whatever else has no
-    date, rather than crashing on a None/None comparison): what fed into
-    `doc_id` (`_backward_tree`, recursive) plus where `doc_id` leads
-    (`_forward_path`, to the head). Deliberately not the full connected
-    component — a document that ALSO reached the same head by a different
-    predecessor is not part of `doc_id`'s own history (real data: nine
-    positions were consolidated into one; asking about any single one of
-    the nine must not return all nine). `is_head` marks any entry with no
-    successor of its own. Empty if `doc_id` isn't in the index at all (a
-    dangling id referenced only by a corrupt supersessions row is skipped
-    the same way, never raised)."""
-    ids = _backward_tree(conn, doc_id) | set(_forward_path(conn, doc_id))
-    entries = []
-    for i in ids:
+def history_view(conn: sqlite3.Connection, doc_id: str) -> tuple[list[TreeLine], str | None]:
+    """`doc_id`'s own chain for `ctx history`: everything it recursively
+    absorbed (flat, oldest first, depth 0) then `doc_id` and everything
+    forward of it as a DFS tree — depth increases per hop, branches ordered
+    by id (`direct_successors` is already sorted), every true leaf marked
+    `is_head`. A document reached only as another head's sibling (fan-in,
+    not this id's own lineage) is excluded the same way `_backward_tree`
+    already excludes it.
+
+    Returns `(lines, cycle_path)`: `cycle_path` is the first cycle found,
+    formatted `"a -> b -> a"`, or `None` if the graph resolved cleanly.
+    Empty `lines` means `doc_id` isn't in the index at all."""
+    backward_ids = _backward_tree(conn, doc_id) - {doc_id}
+    lines: list[TreeLine] = []
+    for i in backward_ids:
         row = _document_row(conn, i)
-        if row is None:
-            continue
-        entries.append(
-            ChainEntry(
-                id=row["id"],
-                title=row["title"],
-                status=row["status"],
-                date=row["date"],
-                is_head=not direct_successors(conn, i),
+        if row is not None:
+            lines.append(TreeLine(row["id"], row["title"], row["status"], row["date"], 0, False))
+    lines.sort(key=lambda ln: (ln.date or "", ln.id))
+
+    cycle_path: list[str | None] = [None]
+
+    def visit(current: str, path: tuple[str, ...], depth: int) -> None:
+        row = _document_row(conn, current)
+        successors = direct_successors(conn, current)
+        live = []
+        for s in successors:
+            if s in path:
+                if cycle_path[0] is None:
+                    idx = path.index(s)
+                    cycle_path[0] = " -> ".join([*path[idx:], s])
+                continue
+            live.append(s)
+        if row is not None:
+            lines.append(
+                TreeLine(row["id"], row["title"], row["status"], row["date"], depth, not successors)
             )
-        )
-    entries.sort(key=lambda e: (e.date or "", e.id))
-    return entries
+        # A single live successor continues the same line at the same depth
+        # — a long plain chain must not turn into a staircase. Depth only
+        # increases at an actual fork, one level per branch, so indentation
+        # in `ctx history`'s output means "this is a branch", not "this is
+        # N hops from the root".
+        next_depth = depth if len(live) == 1 else depth + 1
+        for nxt in live:
+            visit(nxt, (*path, nxt), next_depth)
+
+    visit(doc_id, (doc_id,), 0)
+    return lines, cycle_path[0]

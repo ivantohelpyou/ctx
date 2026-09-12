@@ -140,7 +140,8 @@ ctx checkpoint "indexed explainers; next: point research corpus at Hugo docs"
 
 ```
 id — title — path#slug — summary
-  superseded-by: id — title      (only with --history, only if superseded)
+  superseded-by: id — title[; id — title ...]   (--history, if superseded)
+  superseded-by: (cycle)                         (--history, if the graph loops)
 ...
 dropped: id — title
 ...
@@ -153,26 +154,31 @@ index. Read the one or two files it names.
 
 `decisions` corpus documents form a graph via `supersedes:`/`superseded-by:`
 (`ctx index` writes it into `index.db`'s `supersessions(from_id, to_id)`
-table, `from_id` the newer document). `ctx get` filters on it by default —
-acceptance criterion 2 of the plan: **a superseded decision is never
-returned without `--history`.** The filter runs in the SQL `WHERE` clause,
-before ranking, so a superseded document never consumes budget either; it
-isn't ranked-then-dropped, it's never a candidate.
+table, `from_id` the newer document). **The graph is the truth, not the
+`status` column** — acceptance criterion 2 of the plan ("a superseded
+decision is never returned without `--history`") has to hold even for a
+document that omitted `status:` entirely (indexes as NULL, which would
+otherwise pass a status-only filter) or carries a stale one. So `ctx get`'s
+default filter excludes a document if EITHER its status says non-current,
+OR it has any successor edge at all in `supersessions`, whatever its status
+says — both checked in the SQL `WHERE` clause, before ranking, so an
+excluded document never consumes budget; it isn't ranked-then-dropped, it's
+never a candidate.
 
 With `--history`, superseded documents are included, each annotated with the
-walker's answer to "what replaced this, ultimately" — the HEAD of its chain,
-not just its direct successor, so reading one line never leaves you one hop
-short of what's current:
+walker's answer to "what replaced this, ultimately" — every HEAD of its
+chain, not just a direct successor. Plural on purpose: `ctx lint` permits a
+document to be superseded by more than one other (a fork is valid data, not
+corruption), so reading one line must never silently drop a sibling:
 
 ```
 adr-001 — Two database files, not one — docs/decisions/adr-001....md#... — ...
   superseded-by: adr-002 — Two database files, built with SEA
 ```
 
-`ctx history <id>` prints the same graph the other way: the full chain
-connected to `<id>` (successors and predecessors, transitively), oldest to
-newest by `date`, marking whichever entry has no successor of its own as the
-current head:
+`ctx history <id>` prints `<id>`'s own chain — what it recursively absorbed
+(flat, oldest first) then `<id>` and everything forward of it, indented one
+level per fork, every current head marked:
 
 ```
 $ ctx history adr-001
@@ -180,11 +186,35 @@ adr-001 — superseded — 2026-09-01 — Two database files, not one
 adr-002 — accepted — 2026-09-05 — Two database files, built with SEA  <- current
 ```
 
-Both walks (`history.py`) are visited-set bounded: a cycle or a dangling id
-in a hand-edited or corrupt `index.db` stops the walk instead of looping or
-raising — `ctx lint` is what rejects cycles and unreciprocated links when
-they can still be fixed at the source (`ctx index` time); the walker's job
-is to not crash on an index that got past it anyway.
+A fork prints as nested branches (`split-x`/`split-y` both directly
+supersede `split-0`):
+
+```
+$ ctx history split-0
+split-0 — superseded — 2026-01-01 — Split point
+  split-x — accepted — 2026-02-01 — One branch  <- current
+  split-y — accepted — 2026-02-02 — The other branch  <- current
+```
+
+**Cycles are reported, never silent.** Both walks (`history.py`) are
+path-visited-set bounded, so a cycle in a hand-edited or corrupt `index.db`
+always terminates — but termination alone used to look like success (exit
+0, no head). Now: `ctx history` prints what it found, then
+`cycle detected: a -> b -> a — index is corrupt, run ctx lint` on stderr and
+exits 2; `ctx get --history` annotates the hit `superseded-by: (cycle)` and
+warns once on stderr. `ctx lint` is what rejects cycles and unreciprocated
+links when they can still be fixed at the source (`ctx index` time); the
+walker's job is to fail loudly on an index that got past it anyway, not to
+resolve it.
+
+**`ctx index` runs the decisions structural checks on every build** —
+reciprocity, cycles, an `accepted` doc something else claims to supersede —
+the cheap subset of `ctx lint` that most affects whether `--history`'s
+output means anything. By default it warns on stderr and still publishes
+(`N decisions lint errors — run ctx lint`, exit 0); `ctx index --strict`
+refuses to publish instead (exit 1, `index.db` left exactly as it was) —
+the existing atomic build (temp file, renamed only on success) already
+makes "don't publish" as simple as not calling it.
 
 ## Design decisions that depart from a naive read of the memo
 
@@ -201,7 +231,8 @@ is to not crash on an index that got past it anyway.
   log" cannot both be true of a single file.
 - The supersession walker and `ctx get --history`'s chained annotation ship
   in Phase 3, against the real decisions corpus (`strategy export --ctx`,
-  hq-sl5k) — see "Supersession" above.
+  hq-sl5k) — see "Supersession" above, including the round-2 review fixes:
+  graph-based (not status-based) exclusion, fan-out, and cycle reporting.
 
 ## Tests
 
@@ -216,6 +247,8 @@ ceiling), checkpoint append, and byte-identity of `ctx get` output across a
 `aliases:` into tags/terms, duplicate target key), hand-authored-key
 precedence, tags/terms comma-splitting, `type: hugo` draft-skipping,
 `date`/`last-verified` normalization across date/datetime/string input, the
-supersession walker (successors/predecessors, cycle/dangling-id safety),
-`ctx get --history`'s chained annotation and its budget accounting, `ctx
-history`, and per-corpus `exclude:`.
+supersession walker (successors/predecessors, fan-out/fan-in, cycle
+detection and its exit codes/warnings), `ctx get --history`'s graph-based
+exclusion and chained annotation (including the no-status-but-superseded
+case) and its budget accounting, `ctx history`'s indented tree output,
+`ctx index --strict`, and per-corpus `exclude:`.
