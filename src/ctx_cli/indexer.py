@@ -16,6 +16,7 @@ so a bad corpus fails cleanly (`DuplicateIdError`) instead of raising a raw
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import tempfile
@@ -86,7 +87,12 @@ def _display_path(path: Path, rig_root: Path) -> str:
     here (`CorpusSpec.path` and `find_ctx_dir`'s walk both call `.resolve()`),
     so this is safe, and `relative_to()`'s general-purpose part-by-part
     reconstruction measured as the dominant cost of fingerprinting a few
-    hundred files — not the stat() calls next to it."""
+    hundred files — not the stat() calls next to it.
+
+    Precondition: `path` is strictly below a corpus root, never equal to
+    `rig_root` itself — no caller ever passes a bare rig root, so the
+    `path == rig_root` case (which this returns as the raw root, unlike
+    `relative_to()`'s ".") is unreachable in practice (round-3 review)."""
     path_str = str(path)
     prefix = str(rig_root) + os.sep
     if path_str.startswith(prefix):
@@ -119,14 +125,22 @@ def _fingerprint(config: RigConfig, files: list[tuple[CorpusSpec, Path]]) -> str
     a deliberate `os.utime` restoring the original timestamp after an
     in-place edit of the same length — not a real editor workflow, but
     documented here and in the README's "when to run `ctx index` by hand"
-    note."""
+    note.
+
+    Entries are joined with a bare "\n" for hashing, but each entry is
+    `json.dumps`-encoded first: a path can legally contain a literal newline
+    (round-3 review), and json escapes it (`\\n`, two characters, inside the
+    JSON string) rather than emitting the raw byte — so the character used
+    as the entry separator can never appear *as* a separator inside a field,
+    and two different file sets can't serialize to the same joined string."""
     entries = []
     for spec, path in files:
         st = path.stat()
         rel = _display_path(path, config.rig_root)
-        entries.append(f"{spec.name}\x00{rel}\x00{st.st_size}\x00{st.st_mtime_ns}")
+        entries.append((spec.name, rel, st.st_size, st.st_mtime_ns))
     entries.sort()
-    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+    lines = "\n".join(json.dumps(list(e)) for e in entries)
+    return hashlib.sha256(lines.encode("utf-8")).hexdigest()
 
 
 def find_duplicate_ids(config: RigConfig) -> dict[str, list[str]]:

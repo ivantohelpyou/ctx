@@ -157,6 +157,26 @@ def test_rename_only_triggers_reindex(config):
     assert index_is_stale(config)
 
 
+def test_fingerprint_distinguishes_path_with_embedded_newline(config):
+    """Round-3 review: entries are joined with a bare '\\n' for hashing, and
+    a path can legally contain a literal newline — two different states
+    could otherwise serialize identically. json-encoding each entry first
+    (which escapes an embedded newline as two characters, `\\n`, inside the
+    JSON string) must still tell these two states apart."""
+    from ctx_cli.indexer import _collect_source_files, _fingerprint
+
+    explainers_dir = config.corpora[0].path
+    normal = explainers_dir / "plain-name.md"
+    normal.write_text("---\nid: plain\ntitle: Plain\nsummary: no funny business.\n---\n")
+
+    fp_before = _fingerprint(config, _collect_source_files(config))
+
+    normal.rename(explainers_dir / "weird\nname.md")
+    fp_after = _fingerprint(config, _collect_source_files(config))
+
+    assert fp_before != fp_after
+
+
 def test_fingerprint_cost_on_300_docs_under_20ms(tmp_path, rig_dir):
     """Measures the stat()-everything cost the digest adds; must stay well
     inside the lazy-reindex budget. Median of several calls, with one
