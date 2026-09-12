@@ -7,6 +7,7 @@ A rig's `.ctx/` is found by walking up from cwd, the way git finds `.git/`.
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 from pathlib import Path
 
 import yaml
@@ -20,6 +21,16 @@ CHECKPOINTS_DIRNAME = "checkpoints"
 CHECKPOINT_FILENAME = "current.md"
 
 VALID_CORPUS_TYPES = ("explainers", "decisions", "shared", "hugo")
+
+# ctx has no concept of a non-document file inside a corpus directory — every
+# `*.md` is a document `ctx lint` requires id/title/summary on. A README
+# explaining what's generated and how (the strategy `export --ctx` exporter,
+# for one) is not itself a decision or an explainer, so it's excluded from
+# indexing/lint/the staleness fingerprint by default, everywhere, without the
+# fake-frontmatter workaround the exporter had to add (hq-sl5k). Explicit
+# `exclude:` in config.yaml overrides this entirely — `exclude: []` un-hides
+# README.md if a rig genuinely wants it treated as a document.
+DEFAULT_EXCLUDE = ["README.md"]
 
 # Preset for `type: hugo` (research's docs/ corpus): Hugo's own frontmatter
 # keys are read as ctx's contract keys without touching the source files —
@@ -105,6 +116,11 @@ class CorpusSpec:
     # `include_drafts: true` in config.yaml overrides it back to false for
     # any corpus (re-i1n review, finding 5).
     skip_drafts: bool = False
+    # Glob patterns, relative to `path`, for files that are not documents at
+    # all — never indexed, never linted, never part of the staleness
+    # fingerprint. Defaults to `["README.md"]`; explicit `exclude:` overrides
+    # the default rather than adding to it (hq-sl5k).
+    exclude: list[str] = dataclasses.field(default_factory=lambda: list(DEFAULT_EXCLUDE))
 
 
 @dataclasses.dataclass
@@ -177,6 +193,9 @@ def load_config(ctx_dir: Path | None = None) -> RigConfig:
         if spec.get("include_drafts") is not None:
             skip_drafts = not bool(spec["include_drafts"])
 
+        exclude = spec.get("exclude")
+        exclude = list(DEFAULT_EXCLUDE) if exclude is None else [str(p) for p in exclude]
+
         corpora.append(
             CorpusSpec(
                 name=name,
@@ -185,6 +204,7 @@ def load_config(ctx_dir: Path | None = None) -> RigConfig:
                 field_map=field_map,
                 derive_id=derive_id,
                 skip_drafts=skip_drafts,
+                exclude=exclude,
             )
         )
     return RigConfig(rig_root=rig_root, ctx_dir=ctx_dir, corpora=corpora)
@@ -206,10 +226,16 @@ def default_config_yaml(shared_path: Path) -> str:
 
 def iter_corpus_files(spec: CorpusSpec):
     """Yield every markdown file under a corpus's path, recursively, sorted for
-    determinism."""
+    determinism — except any file matching `spec.exclude` (glob, relative to
+    `spec.path`): those are not documents and never reach indexing, lint, or
+    the staleness fingerprint (all three read this one function)."""
     if not spec.path.is_dir():
         return
-    yield from sorted(spec.path.rglob("*.md"))
+    for path in sorted(spec.path.rglob("*.md")):
+        rel = path.relative_to(spec.path).as_posix()
+        if any(fnmatch.fnmatch(rel, pattern) for pattern in spec.exclude):
+            continue
+        yield path
 
 
 def apply_field_map(raw: dict, field_map: dict[str, str]) -> dict:

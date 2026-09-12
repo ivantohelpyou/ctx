@@ -5,6 +5,7 @@ corpora.
 ctx init [--dir PATH]           scaffold .ctx/ (config, ROUTING.md, checkpoints/)
 ctx index                       rebuild index.db from frontmatter
 ctx get "<query>" [...]         search, budgeted, deterministic output
+ctx history <id>                a decision's supersession chain, oldest to newest
 ctx lint                        frontmatter + supersession graph integrity
 ctx checkpoint "<note>"         append session state to checkpoints/current.md
 """
@@ -27,6 +28,7 @@ from .corpus import (
     load_config,
 )
 from .ctxdb.db import log_query
+from .history import chain as history_chain
 from .indexer import DuplicateIdError, build_index, ensure_fresh_index
 from .lint import lint as run_lint
 from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, search
@@ -138,6 +140,35 @@ def get_cmd(
     # A failure to log is never a reason to fail a query that already
     # succeeded — log_query() degrades to a stderr warning on its own.
     log_query(config.ctx_db_path, query=query, budget=budget, returned=len(kept), corpus=corpus)
+
+
+@main.command("history")
+@click.argument("doc_id")
+@click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
+def history_cmd(doc_id: str, start_dir: Path | None):
+    """Print DOC_ID's supersession chain, oldest to newest, marking the head."""
+    try:
+        ctx_dir = find_ctx_dir(start_dir)
+        config = load_config(ctx_dir)
+    except (CtxNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    try:
+        ensure_fresh_index(config)
+        uri = config.index_db_path.resolve().as_uri() + "?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            entries = history_chain(conn, doc_id)
+        finally:
+            conn.close()
+    except INDEX_ERRORS as e:
+        raise click.ClickException(str(e)) from e
+
+    if not entries:
+        raise click.ClickException(f"no document {doc_id!r} in the index")
+
+    for e in entries:
+        marker = "  <- current" if e.is_head else ""
+        click.echo(f"{e.id} — {e.status or ''} — {e.date or ''} — {e.title}{marker}")
 
 
 @main.command("lint")
