@@ -3,7 +3,8 @@
 Output contract (must be deterministic — same query + same index => same bytes):
 
     id — title — path#slug — summary
-      superseded-by: id — title      (only with --history, only if superseded)
+      superseded-by: id — title[; id — title ...]   (--history, if superseded)
+      superseded-by: (cycle)                         (--history, if the graph loops)
     ...
     dropped: id — title
     ...
@@ -39,10 +40,14 @@ class Hit:
     title: str
     summary: str
     status: str | None
-    # (head_id, head_title) when this hit has been superseded — only ever
-    # set with --history (search()'s only caller of head_info); walker output,
+    # Every head reached from this hit — plural because a fork is valid data
+    # (lint allows one doc superseded by more than one other), not just its
+    # first successor. Only ever populated with --history; walker output,
     # never a raw column.
-    superseded_by: tuple[str, str] | None = None
+    superseded_by: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+    # True if the walk found a successor edge back onto its own path — a
+    # corrupt or hand-edited index, not a data shape `ctx lint` permits.
+    cycle: bool = False
 
 
 def _slugify(title: str) -> str:
@@ -67,13 +72,17 @@ def format_hit(hit: Hit) -> str:
 
 def format_superseded_by(hit: Hit) -> str | None:
     """The walker's one-line annotation on a `--history` hit that has been
-    superseded: the HEAD of its chain (the current document), not just its
-    direct successor — reading `id — title` alone should never leave you one
-    hop short of what's actually current."""
+    superseded: every HEAD of its chain (plural — a fork is valid data), not
+    just a direct successor — reading `id — title` alone should never leave
+    you one hop short of what's actually current, or silently missing a
+    sibling fork. A cycle takes precedence over any heads also found (a
+    corrupt index is the more important thing to say)."""
+    if hit.cycle:
+        return "  superseded-by: (cycle)"
     if not hit.superseded_by:
         return None
-    head_id, head_title = hit.superseded_by
-    return f"  superseded-by: {head_id} — {head_title}"
+    parts = "; ".join(f"{head_id} — {head_title}" for head_id, head_title in hit.superseded_by)
+    return f"  superseded-by: {parts}"
 
 
 def format_dropped(hit: Hit) -> str:
@@ -121,7 +130,22 @@ def search(
         if not history:
             # Status filter before ranking (memo: "status beats score"). Only
             # decisions carry a lifecycle status; anything else passes through.
-            sql += " AND (documents.status IS NULL OR documents.status = 'accepted')"
+            #
+            # The GRAPH is the truth, not just the status column (review
+            # finding, hq-sl5k round 2): a decisions doc that omits `status:`
+            # entirely indexes with status NULL and used to pass this filter
+            # even when `supersessions` already says something replaced it —
+            # acceptance 2 ("a superseded decision is never returned without
+            # --history") broke on exactly that case. So a document is
+            # excluded here if EITHER its status says so, OR it has any
+            # successor edge at all, regardless of what its status column
+            # says — the second check is the one that doesn't trust status.
+            sql += (
+                " AND (documents.status IS NULL OR documents.status = 'accepted')"
+                " AND NOT EXISTS ("
+                "   SELECT 1 FROM supersessions s WHERE s.to_id = documents.id"
+                " )"
+            )
         sql += " ORDER BY rank ASC, documents.id ASC"
         rows = conn.execute(sql, params).fetchall()
         hits = [
@@ -139,7 +163,10 @@ def search(
             # Only --history ever surfaces a superseded hit, so only --history
             # pays for the walk (one bounded query per hit; see history.py).
             for h in hits:
-                h.superseded_by = head_info(conn, h.id)
+                info = head_info(conn, h.id)
+                if info is not None:
+                    h.superseded_by = info.heads
+                    h.cycle = info.cycle
     finally:
         conn.close()
     return hits

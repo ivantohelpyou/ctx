@@ -234,6 +234,26 @@ def _lint_decisions(spec: CorpusSpec, docs, errors: list[str]) -> None:
         _visit(doc_id, [])
 
 
+def decisions_structural_errors(config: RigConfig) -> list[str]:
+    """Just the `decisions` graph checks (reciprocity, cycles, an `accepted`
+    doc something else claims to supersede) — none of the explainers/shared
+    checks, none of `_lint_common`'s required-field check, no `git log`
+    calls. `ctx index` runs this on every build (warns on stderr and still
+    publishes by default; `--strict` refuses to publish instead) so a
+    corpus can drift out of structural shape without anyone running the
+    slower, fuller `ctx lint` — this is the cheap subset that matters most
+    for `ctx get --history`'s output to mean anything."""
+    errors: list[str] = []
+    for spec in config.corpora:
+        if spec.type != "decisions":
+            continue
+        all_docs = _load_docs(spec)
+        draft_paths = {path for path, doc in all_docs if doc and is_draft_skipped(spec, doc)}
+        docs = [(path, doc) for path, doc in all_docs if path not in draft_paths]
+        _lint_decisions(spec, docs, errors)
+    return errors
+
+
 def _lint_shared(spec: CorpusSpec, docs, errors: list[str]) -> None:
     total_bytes = sum(path.stat().st_size for path, _ in docs)
     if total_bytes > SHARED_BYTE_CEILING:

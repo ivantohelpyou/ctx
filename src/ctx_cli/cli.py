@@ -28,8 +28,9 @@ from .corpus import (
     load_config,
 )
 from .ctxdb.db import log_query
-from .history import chain as history_chain
+from .history import history_view
 from .indexer import DuplicateIdError, build_index, ensure_fresh_index
+from .lint import decisions_structural_errors
 from .lint import lint as run_lint
 from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, search
 from .templates import ROUTING_TEMPLATE
@@ -84,18 +85,44 @@ def init_cmd(target_dir: Path | None):
 
 @main.command("index")
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
-def index_cmd(start_dir: Path | None):
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="refuse to publish (exit 1, index.db left as it was) if the decisions "
+    "corpus fails its structural checks (reciprocity, cycles, accepted-but-superseded)",
+)
+def index_cmd(start_dir: Path | None, strict: bool):
     """Rebuild index.db from frontmatter (full rebuild, not incremental)."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
         config = load_config(ctx_dir)
     except (CtxNotFoundError, ValueError) as e:
         raise click.ClickException(str(e)) from e
+
+    # Read straight from frontmatter, not the index — this must be knowable
+    # before deciding whether to build at all. `--strict` never publishes: the
+    # atomic build in indexer.py already writes to a temp file and renames
+    # only on success, so simply not calling build_index() here achieves
+    # "without publishing" with no change to that machinery.
+    decisions_errors = decisions_structural_errors(config)
+    if strict and decisions_errors:
+        for err in decisions_errors:
+            click.echo(f"ERROR: {err}", err=True)
+        click.echo(
+            f"{len(decisions_errors)} decisions lint error(s) — refusing to publish "
+            f"(--strict); index.db left unchanged",
+            err=True,
+        )
+        raise click.exceptions.Exit(1)
+
     try:
         count = build_index(config)
     except INDEX_ERRORS as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"indexed {count} documents into {config.index_db_path}")
+    if decisions_errors:
+        click.echo(f"{len(decisions_errors)} decisions lint errors — run ctx lint", err=True)
 
 
 @main.command("get")
@@ -136,6 +163,10 @@ def get_cmd(
 
     kept, dropped = apply_budget(hits, budget, limit=limit)
     click.echo(render(kept, dropped), nl=False)
+    if any(h.cycle for h in kept):
+        click.echo(
+            "warning: supersession graph has a cycle — index is corrupt, run ctx lint", err=True
+        )
 
     # A failure to log is never a reason to fail a query that already
     # succeeded — log_query() degrades to a stderr warning on its own.
@@ -146,7 +177,8 @@ def get_cmd(
 @click.argument("doc_id")
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
 def history_cmd(doc_id: str, start_dir: Path | None):
-    """Print DOC_ID's supersession chain, oldest to newest, marking the head."""
+    """Print DOC_ID's supersession chain, oldest to newest, indenting a fork
+    and marking every current head."""
     try:
         ctx_dir = find_ctx_dir(start_dir)
         config = load_config(ctx_dir)
@@ -157,18 +189,23 @@ def history_cmd(doc_id: str, start_dir: Path | None):
         uri = config.index_db_path.resolve().as_uri() + "?mode=ro&immutable=1"
         conn = sqlite3.connect(uri, uri=True)
         try:
-            entries = history_chain(conn, doc_id)
+            lines, cycle_path = history_view(conn, doc_id)
         finally:
             conn.close()
     except INDEX_ERRORS as e:
         raise click.ClickException(str(e)) from e
 
-    if not entries:
+    if not lines:
         raise click.ClickException(f"no document {doc_id!r} in the index")
 
-    for e in entries:
-        marker = "  <- current" if e.is_head else ""
-        click.echo(f"{e.id} — {e.status or ''} — {e.date or ''} — {e.title}{marker}")
+    for ln in lines:
+        indent = "  " * ln.depth
+        marker = "  <- current" if ln.is_head else ""
+        click.echo(f"{indent}{ln.id} — {ln.status or ''} — {ln.date or ''} — {ln.title}{marker}")
+
+    if cycle_path is not None:
+        click.echo(f"cycle detected: {cycle_path} — index is corrupt, run ctx lint", err=True)
+        raise click.exceptions.Exit(2)
 
 
 @main.command("lint")
