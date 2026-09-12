@@ -1,0 +1,10 @@
+corpora:
+  explainers:
+    type: explainers
+    path: docs/explainers
+  decisions:
+    type: decisions
+    path: docs/decisions
+  shared:
+    type: shared
+    path: docs/shared
