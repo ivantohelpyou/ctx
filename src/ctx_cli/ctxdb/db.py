@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .models import Base, Miss, Query
@@ -25,10 +27,17 @@ def log_query(
     corpus: str | None = None,
 ) -> None:
     """Log every `ctx get` call; a zero-result query is also logged as a miss
-    (memo: "keep a log of queries that returned nothing useful")."""
-    engine = get_engine(ctx_db_path)
-    with Session(engine) as session:
-        session.add(Query(corpus=corpus, query=query, budget=budget, returned=returned))
-        if returned == 0:
-            session.add(Miss(query=query, note=None))
-        session.commit()
+    (memo: "keep a log of queries that returned nothing useful").
+
+    A query that already succeeded must never fail because logging it
+    didn't: a read-only `.ctx/` (or a read-only `ctx.db`) degrades to a
+    one-line stderr warning, never a traceback and never a non-zero exit."""
+    try:
+        engine = get_engine(ctx_db_path)
+        with Session(engine) as session:
+            session.add(Query(corpus=corpus, query=query, budget=budget, returned=returned))
+            if returned == 0:
+                session.add(Miss(query=query, note=None))
+            session.commit()
+    except (OperationalError, SQLAlchemyError, OSError) as e:
+        print(f"warning: could not log query to {ctx_db_path} ({e}); not logged", file=sys.stderr)

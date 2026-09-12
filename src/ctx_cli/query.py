@@ -22,6 +22,10 @@ from pathlib import Path
 # table so title and terms outrank a body-shaped summary hit.
 BM25_WEIGHTS = (10.0, 1.0, 5.0, 1.0)
 DEFAULT_BUDGET = 1500
+# Hard cap on returned entries regardless of budget (acceptance: "typical
+# query... ≤5 entries"). `--limit` overrides. Without this, a query with many
+# small hits and a generous budget can return dozens of entries.
+DEFAULT_LIMIT = 5
 
 
 @dataclasses.dataclass
@@ -64,8 +68,13 @@ def search(
     corpus: str | None = None,
     history: bool = False,
 ) -> list[Hit]:
-    """Run the FTS5 query, status-filtered before ranking, ranked by BM25."""
-    conn = sqlite3.connect(index_db_path)
+    """Run the FTS5 query, status-filtered before ranking, ranked by BM25.
+
+    Opens `index.db` read-only: a query never writes to it, so a read-only
+    `.ctx/` directory (or a read-only filesystem) must not stop `ctx get` from
+    working."""
+    uri = index_db_path.resolve().as_uri() + "?mode=ro&immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     try:
         match_expr = _fts_match_expr(query)
@@ -101,16 +110,24 @@ def search(
     ]
 
 
-def apply_budget(hits: list[Hit], budget: int) -> tuple[list[Hit], list[Hit]]:
-    """Greedily fill to `budget` tokens (chars/4) in rank order. The first hit
-    is always kept even if it alone exceeds budget, so a query never returns
-    zero results purely because one entry is large."""
+def apply_budget(
+    hits: list[Hit], budget: int, limit: int = DEFAULT_LIMIT
+) -> tuple[list[Hit], list[Hit]]:
+    """Greedily fill to `budget` tokens (chars/4) in rank order, capped at
+    `limit` entries either way. The first hit is always kept even if it alone
+    exceeds budget, so a query never returns zero results purely because one
+    entry is large. Rank order (and its `documents.id` tie-break, from the
+    SQL `ORDER BY`) is preserved, so which entries get dropped is
+    deterministic — same query, same index, same bytes."""
     kept: list[Hit] = []
     cumulative_tokens = 0.0
     cutoff = None
     for i, hit in enumerate(hits):
+        if len(kept) >= limit:
+            cutoff = i
+            break
         line_tokens = len(format_hit(hit)) / 4
-        if i > 0 and cumulative_tokens + line_tokens > budget:
+        if kept and cumulative_tokens + line_tokens > budget:
             cutoff = i
             break
         kept.append(hit)

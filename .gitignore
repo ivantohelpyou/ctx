@@ -9,3 +9,9 @@ uv.lock.bak
 # per-rig disposable + durable databases never live in the tool repo
 # (root only — tests/fixtures/rig/.ctx/ is a committed test fixture, not runtime data)
 /.ctx/
+
+# Generated admin frontend for ctx.db (local only), never
+# hand-edited.
+/frontend/
+# Local tool metadata
+.sea/
