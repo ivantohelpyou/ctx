@@ -153,6 +153,9 @@ def lint_cmd(start_dir: Path | None):
 
     for name, pct in report.coverage.items():
         click.echo(f"{name}: covers coverage {pct:.1f}%")
+    for name, n in report.skipped_drafts.items():
+        if n:
+            click.echo(f"{name}: {n} draft(s) skipped")
     for err in report.errors:
         click.echo(f"ERROR: {err}")
 

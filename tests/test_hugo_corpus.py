@@ -152,3 +152,28 @@ def test_rm_index_and_reindex_reproduces_hugo_corpus_byte_identical(rig_dir):
     after = search(config.index_db_path, "example survey", corpus="docs")
 
     assert [h.__dict__ for h in before] == [h.__dict__ for h in after]
+
+
+def test_derived_id_keeps_directory_segments_so_two_index_files_never_collide(rig_dir):
+    """Finding 7: the derived id is the whole relative path minus `.md`, not
+    a bare filename stem — `a/index.md` and `b/index.md` must stay distinct
+    (a bare-stem id would collapse both to `index` and raise DuplicateIdError)."""
+    hugo_dir = rig_dir / "docs" / "hugo"
+    for sub in ("a", "b"):
+        d = hugo_dir / sub
+        d.mkdir()
+        (d / "index.md").write_text(
+            f"---\ntitle: {sub.upper()} Index\ndescription: {sub} section index.\n---\n"
+        )
+
+    _write_hugo_config(rig_dir)
+    config = load_config(rig_dir / ".ctx")
+    count = build_index(config)  # must not raise DuplicateIdError
+
+    conn = sqlite3.connect(config.index_db_path)
+    ids = {r[0] for r in conn.execute("SELECT id FROM documents")}
+    conn.close()
+
+    assert "a/index" in ids
+    assert "b/index" in ids
+    assert count == len(ids)  # both counted, neither collapsed into the other
