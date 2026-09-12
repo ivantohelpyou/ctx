@@ -163,14 +163,25 @@ def history_view(conn: sqlite3.Connection, doc_id: str) -> tuple[list[TreeLine],
 
     Returns `(lines, cycle_path)`: `cycle_path` is the first cycle found,
     formatted `"a -> b -> a"`, or `None` if the graph resolved cleanly.
-    Empty `lines` means `doc_id` isn't in the index at all."""
+    Empty `lines` means `doc_id` isn't in the index at all.
+
+    One `ids_seen` set spans BOTH the backward pass and the forward DFS: on
+    a corrupt index a node can be reachable as both a predecessor and a
+    successor of `doc_id` (the loop-a/loop-b cycle fixture: an id that is
+    simultaneously the other's predecessor and successor renders once, not
+    twice — round 2 review). Cycle DETECTION stays keyed on the per-branch
+    `path` tuple, unaffected by `ids_seen`, so a node already rendered is
+    still walked for its own successors rather than silently cutting the
+    traversal short and missing the cycle."""
     backward_ids = _backward_tree(conn, doc_id) - {doc_id}
+    backward_rows = [r for r in (_document_row(conn, i) for i in backward_ids) if r is not None]
+    backward_rows.sort(key=lambda r: (r["date"] or "", r["id"]))
+
     lines: list[TreeLine] = []
-    for i in backward_ids:
-        row = _document_row(conn, i)
-        if row is not None:
-            lines.append(TreeLine(row["id"], row["title"], row["status"], row["date"], 0, False))
-    lines.sort(key=lambda ln: (ln.date or "", ln.id))
+    ids_seen: set[str] = set()
+    for row in backward_rows:
+        lines.append(TreeLine(row["id"], row["title"], row["status"], row["date"], 0, False))
+        ids_seen.add(row["id"])
 
     cycle_path: list[str | None] = [None]
 
@@ -185,10 +196,11 @@ def history_view(conn: sqlite3.Connection, doc_id: str) -> tuple[list[TreeLine],
                     cycle_path[0] = " -> ".join([*path[idx:], s])
                 continue
             live.append(s)
-        if row is not None:
+        if row is not None and current not in ids_seen:
             lines.append(
                 TreeLine(row["id"], row["title"], row["status"], row["date"], depth, not successors)
             )
+            ids_seen.add(current)
         # A single live successor continues the same line at the same depth
         # — a long plain chain must not turn into a staircase. Depth only
         # increases at an actual fork, one level per branch, so indentation

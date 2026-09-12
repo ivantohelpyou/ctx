@@ -23,9 +23,14 @@ def test_search_ranks_title_above_summary_only_match(config):
     assert hits[0].id == "exp-002"
 
 
+DECISIONS = ["decisions"]  # the fixture rig's one type: decisions corpus, by name
+
+
 def test_history_flag_includes_superseded_decision(config):
     build_index(config)
-    default_hits = search(config.index_db_path, "database", corpus="decisions")
+    default_hits = search(
+        config.index_db_path, "database", corpus="decisions", decisions_corpora=DECISIONS
+    )
     assert all(h.id != "adr-001" for h in default_hits)  # superseded, hidden by default
 
     history_hits = search(config.index_db_path, "database", corpus="decisions", history=True)
@@ -51,7 +56,9 @@ def test_history_flag_annotates_superseded_hit_with_chain_head(config):
 
 def test_without_history_flag_no_annotation_and_no_walker_cost_for_accepted_hit(config):
     build_index(config)
-    default_hits = search(config.index_db_path, "database", corpus="decisions")
+    default_hits = search(
+        config.index_db_path, "database", corpus="decisions", decisions_corpora=DECISIONS
+    )
     assert all(h.superseded_by == [] for h in default_hits)
 
 
@@ -76,7 +83,9 @@ def test_default_get_excludes_superseded_doc_with_no_status(config):
     )
     build_index(config)
 
-    default_hits = search(config.index_db_path, "status", corpus="decisions")
+    default_hits = search(
+        config.index_db_path, "status", corpus="decisions", decisions_corpora=DECISIONS
+    )
     assert all(h.id != "adr-000" for h in default_hits)
 
     history_hits = search(config.index_db_path, "status", corpus="decisions", history=True)
@@ -300,3 +309,21 @@ def test_readonly_ctx_dir_get_degrades_instead_of_crashing(rig_dir):
         assert "Traceback" not in result.output
     finally:
         ctx_dir.chmod(mode)  # restore so pytest can clean up tmp_path
+
+
+def test_cli_get_scopes_lifecycle_exclusion_to_decisions_only(rig_dir):
+    """Round 2 review regression, reproduced: a stray `supersedes:` on an
+    explainer used to vanish it from default `ctx get --corpus explainers`,
+    because the exclusion applied to every corpus, not just `decisions`."""
+    explainer = rig_dir / "docs" / "explainers" / "001-fts5-choice.md"
+    explainer.write_text(
+        explainer.read_text().replace(
+            "last-verified: 2026-09-12\n",
+            "last-verified: 2026-09-12\nsupersedes: [adr-001]\n",
+        )
+    )
+    result = CliRunner().invoke(
+        main, ["get", "fts5", "--corpus", "explainers", "--dir", str(rig_dir)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "exp-001" in result.output

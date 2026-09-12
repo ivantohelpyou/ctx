@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from .corpus import (
     iter_corpus_files,
     resolved_frontmatter,
 )
+from .lint import decisions_structural_errors
 
 SCHEMA = """
 CREATE TABLE documents (
@@ -337,6 +339,17 @@ def index_is_stale(config: RigConfig) -> bool:
 
 def ensure_fresh_index(config: RigConfig) -> None:
     """Lazy reindex: rebuild only if a source file changed since the index was
-    last built. Must stay well inside the 100 ms budget for a few hundred docs."""
+    last built. Must stay well inside the 100 ms budget for a few hundred docs.
+
+    `ctx index` warns on a decisions structural problem (reciprocity, cycles,
+    accepted-but-superseded); this is the OTHER path into a rebuild — every
+    `ctx get`/`ctx history` that finds the index stale — and used to run
+    silently, so a corpus could drift out of shape for as long as nobody ran
+    `ctx index` or `ctx lint` by hand (round 2 review). Same one-line stderr
+    warning, same exit 0: `--strict` is `ctx index`-only, an explicit choice
+    to refuse publishing, not something a read command should ever do."""
     if index_is_stale(config):
         build_index(config)
+        errors = decisions_structural_errors(config)
+        if errors:
+            print(f"{len(errors)} decisions lint errors — run ctx lint", file=sys.stderr)

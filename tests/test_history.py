@@ -279,6 +279,25 @@ def test_history_view_reports_the_cycle(config, rig_dir):
     assert "loop-a" in cycle and "loop-b" in cycle
 
 
+def test_history_view_dedups_a_node_reachable_both_ways(config, rig_dir):
+    """Round 2 review finding: the injected cycle makes loop-b reachable both
+    as a predecessor of loop-a (backward pass) and as loop-a's successor
+    (forward pass) — it must render once, not twice, and the cycle must
+    still be detected (dedup must not cut the walk short)."""
+    _add_cycle_docs(rig_dir)
+    build_index(config)
+    _inject_cycle(config)
+    conn = sqlite3.connect(config.index_db_path)
+    try:
+        lines, cycle = history_view(conn, "loop-a")
+    finally:
+        conn.close()
+    ids = [ln.id for ln in lines]
+    assert len(ids) == len(set(ids))  # every id exactly once
+    assert set(ids) == {"loop-a", "loop-b"}
+    assert cycle is not None
+
+
 def test_history_view_empty_for_unknown_id(config, rig_dir):
     _add_chain_docs(rig_dir)
     build_index(config)
@@ -336,3 +355,9 @@ def test_cli_history_cycle_exits_2_and_warns_on_stderr(config, rig_dir):
     assert "Traceback" not in result.output
     assert "cycle detected" in result.output
     assert "loop-a" in result.output
+
+    # Round 2 review: loop-b is reachable both as loop-a's predecessor and
+    # its successor on this fixture — each id must appear exactly once.
+    ids_printed = [ln.strip().split(" ")[0] for ln in result.output.splitlines()]
+    assert ids_printed.count("loop-a") == 1
+    assert ids_printed.count("loop-b") == 1
