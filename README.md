@@ -39,6 +39,37 @@ collides with Hugo redirect paths in the research rig), `date`.
 Corpus-specific additions and lint rules are in
 `~/gt/docs/plans/ctx-context-retrieval.md` §Schema.
 
+### Corpora with someone else's frontmatter keys (`type: hugo`, or `map:`)
+
+A corpus that already has frontmatter — for another consumer, in another
+schema — doesn't need its files rewritten. A per-corpus `map:` (target key
+→ source key) tells the indexer/linter to read the source key as ctx's own,
+in memory only; the file on disk, and whatever else reads it, is untouched.
+`type: hugo` is a preset for research's `docs/` (Hugo reads `description`,
+`keywords`, `aliases`, `date` and must keep doing so):
+
+```yaml
+corpora:
+  docs:
+    type: hugo          # preset map: {summary: description, tags: keywords}
+    path: docs           # + derive_id: true (id defaults to the path stem)
+```
+
+`aliases:` is deliberately left out of the preset — it's Hugo's URL-redirect
+list, not search vocabulary, and must never be read as `terms:`. `terms:` is
+a real ctx key and may still be hand-added to a Hugo file; Hugo ignores
+frontmatter keys it doesn't know. Any corpus type may set `map:` and
+`derive_id:` explicitly, not just `type: hugo`:
+
+```yaml
+corpora:
+  docs:
+    type: shared
+    path: docs
+    map: {summary: description, tags: keywords}
+    derive_id: true
+```
+
 ## Quick start
 
 ```bash
