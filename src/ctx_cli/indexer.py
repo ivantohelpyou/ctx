@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 
 from . import frontmatter as fm
-from .corpus import CorpusSpec, RigConfig, iter_corpus_files
+from .corpus import CorpusSpec, RigConfig, iter_corpus_files, resolved_frontmatter
 
 SCHEMA = """
 CREATE TABLE documents (
@@ -148,7 +148,8 @@ def find_duplicate_ids(config: RigConfig) -> dict[str, list[str]]:
     document, across all corpora combined (documents.id is globally unique)."""
     seen: dict[str, list[str]] = {}
     for spec, path in _collect_source_files(config):
-        doc = fm.parse_frontmatter(path.read_text(encoding="utf-8"))
+        raw = fm.parse_frontmatter(path.read_text(encoding="utf-8"))
+        doc = resolved_frontmatter(spec, path, raw)
         doc_id = doc.get("id") if doc else None
         if not doc_id:
             continue
@@ -188,7 +189,8 @@ def build_index(config: RigConfig) -> int:
 
             count = 0
             for spec, path in source_files:
-                doc = fm.parse_frontmatter(path.read_text(encoding="utf-8"))
+                raw = fm.parse_frontmatter(path.read_text(encoding="utf-8"))
+                doc = resolved_frontmatter(spec, path, raw)
                 if not doc:
                     continue
                 doc_id = doc.get("id")

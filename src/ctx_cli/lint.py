@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import frontmatter as fm
-from .corpus import CorpusSpec, RigConfig, iter_corpus_files
+from .corpus import CorpusSpec, RigConfig, iter_corpus_files, resolved_frontmatter
 
 # "small enough to be cheap to load from every rig" (memo) — a placeholder
 # ceiling until a real budget is set; ctx lint reports the measured size either way.
@@ -70,9 +70,15 @@ def _parse_date(value) -> datetime | None:
 
 
 def _load_docs(spec: CorpusSpec) -> list[tuple[Path, dict]]:
+    """Frontmatter as ctx sees it: `spec.field_map` applied and `id` derived
+    from the path where the corpus opts in (`resolved_frontmatter`) — the
+    same view `ctx index` builds from, so lint checks the contract ctx
+    actually reads, not the raw file (a Hugo doc's `description:` must not
+    be flagged as a missing `summary:`)."""
     docs = []
     for path in iter_corpus_files(spec):
-        docs.append((path, fm.parse_frontmatter(path.read_text(encoding="utf-8"))))
+        raw = fm.parse_frontmatter(path.read_text(encoding="utf-8"))
+        docs.append((path, resolved_frontmatter(spec, path, raw)))
     return docs
 
 
