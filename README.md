@@ -69,9 +69,14 @@ index. Read the one or two files it names.
 ## Design decisions that depart from a naive read of the memo
 
 - `terms:` not `aliases:` (Hugo collision, see plan).
-- No git hook. `ctx get` compares the index's mtime against the newest source
-  file's mtime and reindexes lazily; `bd` owns the pre-commit/post-merge hooks
-  in every rig.
+- No git hook. `ctx get` compares a sha256 digest of every corpus file's
+  `(path, size, mtime_ns)` against the digest recorded at the last `ctx
+  index` and reindexes lazily if it differs; `bd` owns the pre-commit/
+  post-merge hooks in every rig. The one blind spot a digest can't close:
+  a content edit that preserves both size and mtime exactly (only reachable
+  via a deliberate `os.utime` restoring the original timestamp after an
+  in-place edit of identical length) — if you ever do that, run `ctx index`
+  by hand.
 - Two database files, not one, because "disposable" and "keeps a durable query
   log" cannot both be true of a single file.
 - `decisions` corpus frontmatter contract + lint ship now; the supersession

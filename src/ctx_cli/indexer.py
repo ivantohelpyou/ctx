@@ -15,6 +15,7 @@ so a bad corpus fails cleanly (`DuplicateIdError`) instead of raising a raw
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import tempfile
@@ -78,11 +79,19 @@ def _joined(values: list[str]) -> str:
 def _display_path(path: Path, rig_root: Path) -> str:
     """Rig-relative path when the corpus lives under the rig (explainers,
     decisions); absolute path when it doesn't (shared, which lives at a fixed
-    cross-rig location outside any one rig's tree)."""
-    try:
-        return str(path.relative_to(rig_root))
-    except ValueError:
-        return str(path)
+    cross-rig location outside any one rig's tree).
+
+    Plain string-prefix arithmetic rather than `Path.relative_to()`: both
+    `path` and `rig_root` are already absolute/resolved by the time they get
+    here (`CorpusSpec.path` and `find_ctx_dir`'s walk both call `.resolve()`),
+    so this is safe, and `relative_to()`'s general-purpose part-by-part
+    reconstruction measured as the dominant cost of fingerprinting a few
+    hundred files — not the stat() calls next to it."""
+    path_str = str(path)
+    prefix = str(rig_root) + os.sep
+    if path_str.startswith(prefix):
+        return path_str[len(prefix) :]
+    return path_str
 
 
 def _collect_source_files(config: RigConfig) -> list[tuple[CorpusSpec, Path]]:
@@ -90,6 +99,34 @@ def _collect_source_files(config: RigConfig) -> list[tuple[CorpusSpec, Path]]:
     including ones with no/invalid frontmatter, since deleting *any* of them
     is a directory change that should trigger a reindex."""
     return [(spec, path) for spec in config.corpora for path in iter_corpus_files(spec)]
+
+
+def _fingerprint(config: RigConfig, files: list[tuple[CorpusSpec, Path]]) -> str:
+    """A sha256 digest over the sorted (corpus, path, size, mtime_ns) of every
+    corpus file. Stored in `meta` at build time; `index_is_stale` recomputes
+    it and compares for equality.
+
+    This is a *content-shape* fingerprint, not just a count or a single max
+    mtime: a same-tick delete-one-add-another (count unchanged, new file's
+    mtime no greater than the old max) changes the digest because the file
+    *set* changed; an edit whose mtime ties the previous max (`>` missed it)
+    changes the digest because that file's own (path, size, mtime_ns) entry
+    changed. It also catches renames and swaps for free, since the path is
+    part of what is hashed.
+
+    One blind spot remains, and cannot be closed by stat() alone: a content
+    edit that preserves both size and mtime_ns exactly. That only happens via
+    a deliberate `os.utime` restoring the original timestamp after an
+    in-place edit of the same length — not a real editor workflow, but
+    documented here and in the README's "when to run `ctx index` by hand"
+    note."""
+    entries = []
+    for spec, path in files:
+        st = path.stat()
+        rel = _display_path(path, config.rig_root)
+        entries.append(f"{spec.name}\x00{rel}\x00{st.st_size}\x00{st.st_mtime_ns}")
+    entries.sort()
+    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
 
 
 def find_duplicate_ids(config: RigConfig) -> dict[str, list[str]]:
@@ -118,9 +155,7 @@ def build_index(config: RigConfig) -> int:
     if duplicates:
         raise DuplicateIdError(duplicates)
 
-    newest_mtime = 0.0
-    for _spec, path in source_files:
-        newest_mtime = max(newest_mtime, path.stat().st_mtime)
+    fingerprint = _fingerprint(config, source_files)
 
     fd, tmp_name = tempfile.mkstemp(dir=str(config.ctx_dir), prefix=".index-", suffix=".db")
     os.close(fd)
@@ -188,11 +223,7 @@ def build_index(config: RigConfig) -> int:
 
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES (?, ?)",
-                ("source_count", str(len(source_files))),
-            )
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES (?, ?)",
-                ("newest_mtime", repr(newest_mtime)),
+                ("fingerprint", fingerprint),
             )
             conn.commit()
         finally:
@@ -217,9 +248,9 @@ def build_index(config: RigConfig) -> int:
 
 
 def _read_meta(db_path: Path) -> dict[str, str] | None:
-    """Read the build-time fingerprint (`source_count`, `newest_mtime`) stored
-    in the index itself, or None if the index has no `meta` table (e.g. a
-    pre-hq-jdeh-review index, or a corrupt file)."""
+    """Read the build-time `fingerprint` stored in the index itself, or None
+    if the index has no `meta` table (e.g. a pre-hq-jdeh-review index, or a
+    corrupt file)."""
     try:
         conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
     except sqlite3.OperationalError:
@@ -234,14 +265,20 @@ def _read_meta(db_path: Path) -> dict[str, str] | None:
 
 
 def index_is_stale(config: RigConfig) -> bool:
-    """Stale if the index doesn't exist, if a source file was added or
-    removed (source *count* changed), or if any source file is newer than
-    what was recorded at build time. Comparing against the build's own
-    recorded fingerprint — not the index file's own on-disk mtime — is what
-    catches a deleted file (finding: mtime-only checks never notice a
-    deletion) and avoids a same-tick mismatch between the index file's write
-    time and a source file's mtime (finding: unrelated clocks, not source vs.
-    source)."""
+    """Stale if the index doesn't exist, or if the current corpus's
+    fingerprint (see `_fingerprint`) differs from the one recorded at build
+    time. Comparing digests rather than a count-plus-max-mtime pair is what
+    catches a same-tick delete-and-add (count unchanged, new file's mtime no
+    greater than the old max — round-2 review finding 1) and an edit whose
+    mtime exactly ties the previous max (`>` never sees an equal value —
+    finding 2): both change which (path, size, mtime_ns) triples exist, so
+    both change the digest, regardless of direction or magnitude.
+
+    Blind spot, inherent to any stat()-based check and not closed by this
+    fix: a content edit that preserves both size and mtime_ns exactly (only
+    reachable via a deliberate `os.utime` restoring the original timestamp
+    after an in-place edit of identical length) is invisible. Run `ctx index`
+    by hand if you ever do that."""
     db_path = config.index_db_path
     if not db_path.exists():
         return True
@@ -249,22 +286,12 @@ def index_is_stale(config: RigConfig) -> bool:
     if meta is None:
         return True
 
-    current_files = _collect_source_files(config)
-    try:
-        stored_count = int(meta.get("source_count", "-1"))
-    except ValueError:
-        return True
-    if len(current_files) != stored_count:
+    stored_fingerprint = meta.get("fingerprint")
+    if stored_fingerprint is None:
         return True
 
-    try:
-        stored_newest = float(meta.get("newest_mtime", "0"))
-    except ValueError:
-        return True
-    current_newest = 0.0
-    for _spec, path in current_files:
-        current_newest = max(current_newest, path.stat().st_mtime)
-    return current_newest > stored_newest
+    current_files = _collect_source_files(config)
+    return _fingerprint(config, current_files) != stored_fingerprint
 
 
 def ensure_fresh_index(config: RigConfig) -> None:

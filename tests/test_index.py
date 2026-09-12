@@ -102,31 +102,96 @@ def test_deleted_source_file_triggers_reindex(config):
     assert index_is_stale(config)
 
 
-def test_staleness_uses_stored_build_fingerprint_not_index_file_mtime(config):
-    """Finding 3: comparing against the index *file's own* on-disk mtime can
-    miss an edit that lands at or before that mtime (write latency, clock
-    ticks). Comparing against the max source mtime recorded *at build time*
-    catches it even if the index file's own mtime is later still."""
+def test_same_tick_delete_and_add_triggers_reindex(config):
+    """Round-2 review finding 1: a (count, max-mtime) fingerprint misses a
+    same-tick delete-one-add-another where the new file's mtime is no greater
+    than the old max — count is unchanged and the max doesn't move, but the
+    file *set* did change. A content digest over (path, size, mtime_ns)
+    catches it because it hashes the set of files, not a count of them."""
     build_index(config)
+    explainers_dir = config.corpora[0].path
+    doomed = explainers_dir / "002-budget-arg.md"
+    original_stat = doomed.stat()
 
+    doomed.unlink()
+    replacement = explainers_dir / "003-replacement.md"
+    replacement.write_text(
+        "---\nid: exp-003\ntitle: Replacement\nsummary: takes 002's place.\n---\n"
+    )
+    # Pin the new file's mtime to no later than the one it replaced, so a
+    # max-mtime-only check would see nothing — count unchanged, max unchanged.
+    os.utime(replacement, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    assert index_is_stale(config)
+
+
+def test_edit_with_mtime_tied_to_original_but_size_changed_triggers_reindex(config):
+    """Round-2 review finding 2: `current_newest > stored_newest` is strict,
+    so an edit whose mtime exactly ties the recorded max was invisible. Here
+    the mtime is deliberately restored to its original value after editing
+    content (size changes) — size is part of the digest, so this is caught
+    even though no mtime in the corpus moved at all."""
+    build_index(config)
     doc = config.corpora[0].path / "001-fts5-choice.md"
-    build_time_newest = doc.stat().st_mtime
-    for _spec, p in [(s, f) for s in config.corpora for f in s.path.glob("*.md")]:
-        build_time_newest = max(build_time_newest, p.stat().st_mtime)
+    stat_before = doc.stat()
 
-    # Simulate the index file's own mtime landing well after the real
-    # build-time fingerprint (write buffering / clock skew) ...
-    future = build_time_newest + 10
-    os.utime(config.index_db_path, (future, future))
+    doc.write_text(doc.read_text() + "\nmore content, same original mtime.\n")
+    # Restore the *exact* original nanosecond timestamp (not just the same
+    # float second) so this test isolates size as the signal, not a rounding
+    # artifact of a float round-trip through os.utime.
+    os.utime(doc, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
 
-    # ... then an edit that is newer than the fingerprint but still older
-    # than the index file's own (inflated) mtime.
-    edit_time = build_time_newest + 3
-    os.utime(doc, (edit_time, edit_time))
+    assert index_is_stale(config)
 
-    assert index_is_stale(config), (
-        "a source edit between the build fingerprint and the index file's "
-        "own (later) mtime must still be detected as stale"
+
+def test_rename_only_triggers_reindex(config):
+    """Same bytes, same mtime, different path — the digest includes path, so
+    a rename (or swap) is caught even with content and timestamps untouched."""
+    build_index(config)
+    doc = config.corpora[0].path / "001-fts5-choice.md"
+    stat_before = doc.stat()
+    renamed = config.corpora[0].path / "001-renamed.md"
+    doc.rename(renamed)
+    os.utime(renamed, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+
+    assert index_is_stale(config)
+
+
+def test_fingerprint_cost_on_300_docs_under_20ms(tmp_path, rig_dir):
+    """Measures the stat()-everything cost the digest adds; must stay well
+    inside the lazy-reindex budget. Median of several calls, with one
+    untimed warm-up first: the very first stat() of a just-created file can
+    be dominated by filesystem-cache noise unrelated to the fingerprint
+    algorithm itself (observed: ~30ms cold vs. ~7-10ms warm on this
+    machine), and real usage sees the warm case — the OS file-metadata
+    cache persists across the separate `ctx` processes a session actually
+    runs, even though each is a fresh interpreter."""
+    from ctx_cli.indexer import _collect_source_files, _fingerprint
+
+    explainers_dir = rig_dir / "docs" / "explainers"
+    for i in range(300):
+        (explainers_dir / f"gen-{i:04d}.md").write_text(
+            f"---\nid: gen-{i:04d}\ntitle: Generated {i}\nsummary: filler doc {i}.\n---\n"
+        )
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    files = _collect_source_files(config)
+    assert len(files) >= 300
+
+    _fingerprint(config, files)  # untimed warm-up
+
+    samples = []
+    for _ in range(5):
+        start = time.perf_counter()
+        _fingerprint(config, files)
+        samples.append((time.perf_counter() - start) * 1000)
+    samples.sort()
+    median_ms = samples[len(samples) // 2]
+
+    assert index_is_stale(config) is False
+    assert median_ms < 20, (
+        f"fingerprint over {len(files)} files took {median_ms:.2f}ms (median of "
+        f"{samples}), budget is 20ms"
     )
 
 
