@@ -134,6 +134,50 @@ def test_history_flag_includes_closed_doc(rig_dir):
     assert bbbb.cycle is False
 
 
+def test_cross_rig_dep_id_is_a_warning_not_an_error(rig_dir):
+    """A `deps` id whose prefix differs from the corpus's own majority (a
+    real dependency on another rig's bead, e.g. an `hq-...` id in this
+    `sw-...` corpus) is a WARNING — lint must still be clean (sw-5om review,
+    finding 5): a legitimate cross-rig `blocks` edge must never make
+    `ctx lint` permanently red with nothing local to fix."""
+    _write_work_config(rig_dir)
+    bad = CLOSED_DOC.replace("deps: [sw-aaaa]", "deps: [hq-9fod]")
+    (rig_dir / "work" / "sw-aaaa.md").write_text(OPEN_DOC)
+    (rig_dir / "work" / "sw-bbbb.md").write_text(bad)
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)
+    assert report.ok, report.errors
+    assert any("cross-rig dependency" in w and "hq-9fod" in w for w in report.warnings)
+
+
+def test_same_prefix_missing_dep_id_stays_an_error_even_with_a_cross_rig_dep_present(rig_dir):
+    """Same-prefix drift is still a real error, even in a corpus that also
+    has a legitimate cross-rig dependency elsewhere — the two checks don't
+    interfere with each other."""
+    _write_work_config(rig_dir)
+    bad = CLOSED_DOC.replace("deps: [sw-aaaa]", "deps: [sw-zzzz, hq-9fod]")
+    (rig_dir / "work" / "sw-aaaa.md").write_text(OPEN_DOC)
+    (rig_dir / "work" / "sw-bbbb.md").write_text(bad)
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)
+    assert not report.ok
+    assert any("unknown id 'sw-zzzz'" in e for e in report.errors)
+    assert any("hq-9fod" in w for w in report.warnings)
+
+
+def test_extra_frontmatter_key_bd_status_does_not_break_lint(rig_dir):
+    """`bd-status` (the importer's record of a raw bd status its mapping
+    couldn't otherwise preserve — sw-5om review, finding 1) is an ordinary
+    extra key: lint doesn't enumerate an allowed key set, so it's neither
+    required nor rejected."""
+    _write_work_config(rig_dir)
+    with_extra = OPEN_DOC.replace("status: open\n", "status: blocked\nbd-status: deferred\n")
+    (rig_dir / "work" / "sw-aaaa.md").write_text(with_extra)
+    config = load_config(rig_dir / ".ctx")
+    report = lint(config)
+    assert report.ok, report.errors
+
+
 def test_other_corpus_types_unaffected_by_work_filter(rig_dir):
     """`work_corpora` only ever excludes rows from corpora actually of that
     type — an explainer or shared doc keeps showing up regardless of its own

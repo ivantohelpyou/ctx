@@ -12,7 +12,15 @@ Per-corpus rules (plan §Schema):
   work:       `status`, `priority`, `type`, `created` required; `status` in
               {open, in_progress, blocked, closed}; a `closed` doc also
               requires `closed`/`closed-reason`; every `deps` id must name
-              another document in the same corpus (sw-5om, ctx Phase 5b).
+              another document in the SAME-PREFIX part of the corpus — a
+              same-prefix miss is an ERROR (a typo or real drift), a
+              different-prefix miss is a WARNING ("cross-rig dependency, not
+              resolvable in this corpus"), since one rig's `work` corpus
+              never indexes another rig's beads (sw-5om, ctx Phase 5b
+              review). Extra frontmatter keys (e.g. `bd-status`, the
+              importer's record of a status its mapping couldn't otherwise
+              preserve) are neither required nor rejected — lint only ever
+              checks for the presence/shape of keys it names above.
   all:        `id`, `title`, `summary` are required and non-empty.
 """
 
@@ -40,6 +48,11 @@ SHARED_BYTE_CEILING = 200_000
 @dataclasses.dataclass
 class LintReport:
     errors: list[str] = dataclasses.field(default_factory=list)
+    # Non-fatal: reported, never fails the gate (`report.ok` reads `errors`
+    # only). Currently just the `work` corpus's cross-rig `deps` case (see
+    # `_lint_work`) — a real dependency ctx simply can't resolve locally,
+    # not a data problem in this corpus.
+    warnings: list[str] = dataclasses.field(default_factory=list)
     coverage: dict[str, float] = dataclasses.field(default_factory=dict)
     # Per-corpus count of documents excluded because `draft:` is truthy and
     # the corpus is configured to skip drafts (re-i1n review, finding 5) —
@@ -277,16 +290,46 @@ def decisions_structural_errors(config: RigConfig) -> list[str]:
 WORK_VALID_STATUSES = ("open", "in_progress", "blocked", "closed")
 
 
-def _lint_work(spec: CorpusSpec, docs, errors: list[str]) -> None:
+def _id_prefix(doc_id: str) -> str:
+    """`sw-5om` -> `sw`. An id with no `-` has no prefix (empty string) —
+    never matches a real rig prefix, so it always falls on the "different
+    prefix" (warning) side below, same as a genuine cross-rig id."""
+    return doc_id.split("-", 1)[0] if "-" in doc_id else ""
+
+
+def _majority_prefix(ids: list[str]) -> str | None:
+    """The prefix shared by most of this corpus's own ids — `None` only if
+    the corpus is empty (nothing to compare against, so every miss is
+    reported as an error; see `_lint_work`, there is no data to call
+    "cross-rig" against)."""
+    if not ids:
+        return None
+    counts: dict[str, int] = {}
+    for doc_id in ids:
+        prefix = _id_prefix(doc_id)
+        counts[prefix] = counts.get(prefix, 0) + 1
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _lint_work(spec: CorpusSpec, docs, errors: list[str], warnings: list[str]) -> None:
     """`type: work` — the beads-as-markdown pilot corpus (sw-5om). Beyond
     `_lint_common`'s id/title/summary check: the importer/shim's own
     frontmatter contract (`status`, `priority`, `type`, `created` present;
     `closed`/`closed-reason` present once `status` is `closed`), `status` in
     the enum the shim writes, and every `deps` id resolvable to another
-    document in this same corpus — a dep on a bead ctx never indexed (a
-    different rig, a typo) is exactly the kind of drift `ctx get` must not
-    paper over."""
+    document — but resolvability is only ever checked within this rig's own
+    corpus, so a `deps` id is split two ways (review, sw-5om finding 5):
+
+    - same id-prefix as the corpus's own majority (e.g. another `sw-...`
+      bead) but not found: an ERROR — a typo or real drift ctx should
+      surface.
+    - a different prefix (e.g. `hq-...` in an `sw-` corpus): a WARNING, not
+      an error — a real dependency on another rig's bead that this corpus
+      was never going to be able to resolve locally. Without this split, a
+      single legitimate cross-rig `blocks` edge would make `ctx lint`
+      permanently red with nothing local to fix."""
     by_id = {doc["id"]: doc for _, doc in docs if doc and doc.get("id")}
+    majority_prefix = _majority_prefix(list(by_id))
     for path, doc in docs:
         if not doc:
             continue
@@ -308,7 +351,14 @@ def _lint_work(spec: CorpusSpec, docs, errors: list[str]) -> None:
                     )
 
         for dep in fm.as_list(doc.get("deps")):
-            if dep not in by_id:
+            if dep in by_id:
+                continue
+            if majority_prefix is not None and _id_prefix(dep) != majority_prefix:
+                warnings.append(
+                    f"{spec.name}:{path}: deps references {dep!r} — cross-rig "
+                    f"dependency, not resolvable in this corpus"
+                )
+            else:
                 errors.append(f"{spec.name}:{path}: deps references unknown id {dep!r}")
 
 
@@ -345,7 +395,7 @@ def lint(config: RigConfig) -> LintReport:
         elif spec.type == "shared":
             _lint_shared(spec, docs, report.errors)
         elif spec.type == "work":
-            _lint_work(spec, docs, report.errors)
+            _lint_work(spec, docs, report.errors, report.warnings)
 
     for doc_id, locations in sorted(seen_ids.items()):
         if len(locations) > 1:

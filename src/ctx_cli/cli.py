@@ -242,6 +242,8 @@ def lint_cmd(start_dir: Path | None):
     for name, n in report.skipped_drafts.items():
         if n:
             click.echo(f"{name}: {n} draft(s) skipped")
+    for warn in report.warnings:
+        click.echo(f"WARNING: {warn}")
     for err in report.errors:
         click.echo(f"ERROR: {err}")
 
