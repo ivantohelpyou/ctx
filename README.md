@@ -11,7 +11,7 @@ costs nothing until called.
 
 ## What it holds
 
-Two SQLite files, per rig, under `.ctx/` (gitignored):
+Two SQLite files, per rig, under `.ctx/`:
 
 - **`index.db`** — disposable. `rm .ctx/index.db && ctx index` reconstructs it
   from the corpus frontmatter; the query *output* is byte-for-byte the same,
@@ -32,6 +32,37 @@ corpora:
     type: shared
     path: /home/ivanadamin/gt/docs/shared
 ```
+
+### What to commit
+
+`.ctx/config.yaml` and `.ctx/ROUTING.md` are the routing surface a rig's
+`CLAUDE.md` points at (never inlines) — they must exist in a fresh clone with
+**no** `ctx init` run, so both are **tracked**, not gitignored. Everything
+else under `.ctx/` is disposable or durable-but-local state, and stays
+ignored. A rig's `.gitignore` gets these lines (`ctx init` writes them,
+narrower than a blanket `.ctx/`, so it never re-ignores the two tracked
+files):
+
+```gitignore
+.ctx/index.db*
+.ctx/ctx.db*
+.ctx/checkpoints/
+```
+
+| path | tracked? | why |
+|---|---|---|
+| `.ctx/config.yaml` | yes | corpus config; must survive a fresh clone |
+| `.ctx/ROUTING.md` | yes | what `CLAUDE.md` points at; must survive a fresh clone |
+| `.ctx/index.db*` | no | disposable — `ctx index` reconstructs it byte-for-byte |
+| `.ctx/ctx.db*` | no | durable but local — a query/miss log, not shared state |
+| `.ctx/checkpoints/` | no | session handoff notes, local to whoever's working |
+
+`ctx init` never overwrites an existing `config.yaml` or `ROUTING.md` — safe
+to run in a fresh clone that already has both tracked (exits 0, "exists,
+left alone"); it only fills in what's actually missing. `ctx init --preset
+explainers|hugo|work|mayor` writes a config shaped for that corpus instead of
+the generic `explainers`-guess default — see `_PRESET_CORPUS` in
+`src/ctx_cli/corpus.py` for what each preset writes.
 
 Frontmatter contract (all corpora): `id`, `title`, `summary` (hand-written,
 required — never auto-generate it), `tags`, `terms` (not `aliases:` — that key
@@ -152,7 +183,8 @@ genuinely wants it treated as a document.
 ```bash
 uv tool install .              # → ctx
 cd some-rig
-ctx init                       # writes .ctx/config.yaml, .ctx/ROUTING.md, gitignores .ctx/
+ctx init [--preset explainers|hugo|work|mayor]   # writes config.yaml + ROUTING.md
+                                # (tracked), gitignores index.db/ctx.db/checkpoints/
 # edit .ctx/config.yaml to point `explainers:` at the real docs directory
 ctx index                      # build .ctx/index.db
 ctx get "why did we pick FTS5" --budget 1200
