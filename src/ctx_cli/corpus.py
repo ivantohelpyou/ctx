@@ -210,14 +210,47 @@ def load_config(ctx_dir: Path | None = None) -> RigConfig:
     return RigConfig(rig_root=rig_root, ctx_dir=ctx_dir, corpora=corpora)
 
 
-def default_config_yaml(shared_path: Path) -> str:
-    """Template written by `ctx init`. Explainers path is a guess the operator edits;
-    shared always points at the one cross-rig corpus."""
+VALID_INIT_PRESETS = ("explainers", "hugo", "work", "mayor")
+
+# preset -> (corpus name, type, path) for the rig-specific corpus. Every
+# preset but `mayor` also gets a `shared` corpus pointing at shared_path.
+# Named to match the corpus a real rig already runs (hq-synj): sea =
+# explainers, research = docs (type hugo), speakeasy = work (type work) —
+# `ctx init --preset <shape>` writes the config a rig actually needs instead
+# of a generic guess a hand-edit then has to fix.
+_PRESET_CORPUS = {
+    "explainers": ("explainers", "explainers", "docs/explainers"),
+    "hugo": ("docs", "hugo", "docs"),
+    "work": ("work", "work", "work"),
+}
+
+
+def default_config_yaml(shared_path: Path, preset: str = "explainers") -> str:
+    """Template written by `ctx init [--preset <preset>]` (default:
+    `explainers`, the original generic guess — path is a guess the operator
+    may still need to edit). `mayor` is the one preset without a `shared`
+    corpus: it's the rig where `shared` (and `decisions`) are the local
+    corpora, not the cross-rig target every other preset points at."""
+    if preset == "mayor":
+        return (
+            "corpora:\n"
+            "  shared:\n"
+            "    type: shared\n"
+            "    path: docs/shared\n"
+            "  decisions:\n"
+            "    type: decisions\n"
+            "    path: docs/decisions\n"
+        )
+    if preset not in _PRESET_CORPUS:
+        raise ValueError(
+            f"unknown preset {preset!r}, must be one of {VALID_INIT_PRESETS}"
+        )
+    name, ctype, path = _PRESET_CORPUS[preset]
     return (
         "corpora:\n"
-        "  explainers:\n"
-        "    type: explainers\n"
-        "    path: docs/explainers\n"
+        f"  {name}:\n"
+        f"    type: {ctype}\n"
+        f"    path: {path}\n"
         "  shared:\n"
         "    type: shared\n"
         f"    path: {shared_path}\n"

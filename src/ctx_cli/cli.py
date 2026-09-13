@@ -2,7 +2,9 @@
 corpora.
 
 \b
-ctx init [--dir PATH]           scaffold .ctx/ (config, ROUTING.md, checkpoints/)
+ctx init [--dir PATH] [--preset P]  scaffold .ctx/ (config, ROUTING.md,
+                                 checkpoints/); --preset explainers|hugo|work|
+                                 mayor writes a config shaped for that corpus
 ctx index                       rebuild index.db from frontmatter
 ctx get "<query>" [...]         search, budgeted, deterministic output
 ctx history <id>                a decision's supersession chain, oldest to newest
@@ -19,9 +21,11 @@ import click
 
 from . import checkpoint as checkpoint_mod
 from .corpus import (
+    CHECKPOINTS_DIRNAME,
     CONFIG_FILENAME,
     CTX_DIRNAME,
     ROUTING_FILENAME,
+    VALID_INIT_PRESETS,
     CtxNotFoundError,
     default_config_yaml,
     find_ctx_dir,
@@ -47,38 +51,60 @@ def main():
     pass
 
 
+# `.ctx/config.yaml` and `.ctx/ROUTING.md` are tracked (hq-synj): they're the
+# routing surface a rig's CLAUDE.md points at and must exist in a fresh
+# clone with no `ctx init` run. Only the generated/durable state underneath
+# is gitignored — README "What to commit" has the full rationale.
+GITIGNORE_LINES = (
+    f"{CTX_DIRNAME}/index.db*",
+    f"{CTX_DIRNAME}/ctx.db*",
+    f"{CTX_DIRNAME}/{CHECKPOINTS_DIRNAME}/",
+)
+
+
 @main.command("init")
 @click.option("--dir", "target_dir", type=click.Path(path_type=Path), default=None)
-def init_cmd(target_dir: Path | None):
+@click.option(
+    "--preset",
+    type=click.Choice(VALID_INIT_PRESETS),
+    default="explainers",
+    help="starter config.yaml shaped for a known corpus type, instead of the "
+    "generic explainers guess (explainers/hugo/work/mayor).",
+)
+def init_cmd(target_dir: Path | None, preset: str):
     """Scaffold `.ctx/` at TARGET_DIR (default: cwd)."""
     rig_root = (target_dir or Path.cwd()).resolve()
     ctx_dir = rig_root / CTX_DIRNAME
     ctx_dir.mkdir(parents=True, exist_ok=True)
-    (ctx_dir / "checkpoints").mkdir(exist_ok=True)
+    (ctx_dir / CHECKPOINTS_DIRNAME).mkdir(exist_ok=True)
 
     config_path = ctx_dir / CONFIG_FILENAME
     if not config_path.exists():
-        config_path.write_text(default_config_yaml(SHARED_CORPUS_DEFAULT), encoding="utf-8")
+        config_path.write_text(
+            default_config_yaml(SHARED_CORPUS_DEFAULT, preset=preset), encoding="utf-8"
+        )
         click.echo(f"wrote {config_path}")
     else:
-        click.echo(f"{config_path} already exists, left untouched")
+        click.echo(f"{config_path} exists, left alone")
 
     routing_path = ctx_dir / ROUTING_FILENAME
     if not routing_path.exists():
         routing_path.write_text(ROUTING_TEMPLATE, encoding="utf-8")
         click.echo(f"wrote {routing_path}")
     else:
-        click.echo(f"{routing_path} already exists, left untouched")
+        click.echo(f"{routing_path} exists, left alone")
 
     gitignore_path = rig_root / ".gitignore"
-    line = f"{CTX_DIRNAME}/"
     existing = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
-    if line not in existing.splitlines():
+    existing_lines = existing.splitlines()
+    to_add = [line for line in GITIGNORE_LINES if line not in existing_lines]
+    if to_add:
         with gitignore_path.open("a", encoding="utf-8") as f:
             if existing and not existing.endswith("\n"):
                 f.write("\n")
-            f.write(f"{line}\n")
-        click.echo(f"added '{line}' to {gitignore_path}")
+            for line in to_add:
+                f.write(f"{line}\n")
+        click.echo(f"added {', '.join(to_add)} to {gitignore_path}")
 
     click.echo(f"ctx initialized at {ctx_dir}. Edit {config_path} to point at real corpora.")
 
