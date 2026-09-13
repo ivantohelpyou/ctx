@@ -180,12 +180,32 @@ def find_duplicate_ids(config: RigConfig) -> dict[str, list[str]]:
     return {doc_id: paths for doc_id, paths in seen.items() if len(paths) > 1}
 
 
+def warn_missing_corpus_dirs(config: RigConfig) -> list[str]:
+    """One-line stderr warning, exit 0, for every corpus whose resolved
+    `path` is not a directory — a config error (typo, wrong-machine
+    absolute path, corpus not yet checked out) that `iter_corpus_files`
+    otherwise swallows silently, returning zero documents forever with no
+    signal (hq-synj review finding 1). The other corpora still index; this
+    never blocks a build, it only makes the empty one visible. Returns the
+    messages (also used by `ctx lint`, which reports the same thing as a
+    LINT ERROR rather than a warning — a bad path is worse than a corpus
+    that's merely empty)."""
+    messages = []
+    for spec in config.corpora:
+        if not spec.path.is_dir():
+            messages.append(f"corpus {spec.name!r}: path {spec.path} is not a directory")
+    return messages
+
+
 def build_index(config: RigConfig) -> int:
     """Rebuild `.ctx/index.db` from scratch. Returns the number of documents
     indexed. Raises `DuplicateIdError` (no index written at all) if any two
     documents share an id."""
     config.ctx_dir.mkdir(parents=True, exist_ok=True)
     final_path = config.index_db_path
+
+    for msg in warn_missing_corpus_dirs(config):
+        print(f"warning: {msg}", file=sys.stderr)
 
     source_files = _collect_source_files(config)
 

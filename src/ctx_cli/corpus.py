@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import os
 from pathlib import Path
 
 import yaml
@@ -180,7 +181,17 @@ def load_config(ctx_dir: Path | None = None) -> RigConfig:
             raise ValueError(
                 f"corpus {name!r}: unknown type {ctype!r}, must be one of {VALID_CORPUS_TYPES}"
             )
-        raw_path = Path(spec["path"])
+        # `~` and `$VAR`/`${VAR}` are expanded before anything else — a
+        # committed config (sea/research/speakeasy all commit `shared`'s
+        # path) must resolve on any machine/user, not just the one it was
+        # written on. `expandvars` first, then `expanduser`, matching shell
+        # order (hq-synj review finding 1): `~` in an expanded env var still
+        # expands, `$HOME` inside `~foo` would not need to (expanduser
+        # doesn't touch env vars at all). A literal `/home/other-user/...`
+        # is unaffected by either — expansion doesn't fix a hardcoded wrong
+        # path, only a portable one.
+        expanded = os.path.expanduser(os.path.expandvars(str(spec["path"])))
+        raw_path = Path(expanded)
         path = raw_path if raw_path.is_absolute() else (rig_root / raw_path)
 
         field_map = dict(HUGO_FIELD_MAP) if ctype == "hugo" else {}
@@ -225,12 +236,17 @@ _PRESET_CORPUS = {
 }
 
 
-def default_config_yaml(shared_path: Path, preset: str = "explainers") -> str:
+def default_config_yaml(shared_path: Path | str, preset: str = "explainers") -> str:
     """Template written by `ctx init [--preset <preset>]` (default:
     `explainers`, the original generic guess — path is a guess the operator
     may still need to edit). `mayor` is the one preset without a `shared`
     corpus: it's the rig where `shared` (and `decisions`) are the local
-    corpora, not the cross-rig target every other preset points at."""
+    corpora, not the cross-rig target every other preset points at.
+
+    `shared_path` is written verbatim (a `~`-form string, by convention —
+    see `SHARED_CORPUS_DEFAULT` in cli.py — so the committed config reads
+    the same on any machine/user; `load_config` expands `~`/env vars, not
+    this function)."""
     if preset == "mayor":
         return (
             "corpora:\n"

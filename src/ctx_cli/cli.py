@@ -43,7 +43,11 @@ from .templates import ROUTING_TEMPLATE
 # clean one-line, non-zero-exit message, never a raw traceback.
 INDEX_ERRORS = (DuplicateIdError, sqlite3.Error, OSError)
 
-SHARED_CORPUS_DEFAULT = Path.home() / "gt" / "docs" / "shared"
+# Written literally into config.yaml — NOT resolved via Path.home() — so a
+# committed config (sea/research/speakeasy all commit `shared`'s path) reads
+# the same on any machine/user; `~` is expanded at load time (corpus.py,
+# hq-synj review finding 1), not at `ctx init` time.
+SHARED_CORPUS_DEFAULT = "~/gt/docs/shared"
 
 
 @click.group(help=__doc__)
