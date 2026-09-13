@@ -20,7 +20,7 @@ ROUTING_FILENAME = "ROUTING.md"
 CHECKPOINTS_DIRNAME = "checkpoints"
 CHECKPOINT_FILENAME = "current.md"
 
-VALID_CORPUS_TYPES = ("explainers", "decisions", "shared", "hugo")
+VALID_CORPUS_TYPES = ("explainers", "decisions", "shared", "hugo", "work")
 
 # ctx has no concept of a non-document file inside a corpus directory — every
 # `*.md` is a document `ctx lint` requires id/title/summary on. A README

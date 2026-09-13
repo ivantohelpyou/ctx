@@ -100,6 +100,33 @@ calendar date, kept as written, never shifted for timezone), or a string in
 either shape. A value that doesn't parse as any of those is a `ctx lint`
 error, not a silently-malformed index value.
 
+### `type: work` — beads-as-markdown (sw-5om, Phase 5b pilot)
+
+A fourth corpus type, for a rig piloting `bd`-as-markdown: one file per work
+item (`speakeasy/work/<id>.md` for the pilot rig), written by a `bd`-shaped
+shim instead of `bd` itself. Frontmatter contract: `id`, `title`, `summary`,
+`status`, `priority`, `type`, `deps`, `closed-reason`, `created`, `closed`,
+`tags`, `terms`.
+
+```yaml
+corpora:
+  work:
+    type: work
+    path: work
+```
+
+`ctx lint` on a `work` corpus additionally requires `status`/`priority`/
+`type`/`created`; `status` must be one of `open`, `in_progress`, `blocked`,
+`closed`; a `closed` doc must also carry `closed`/`closed-reason`; every
+`deps` id must resolve to another document in the same corpus.
+
+**`ctx get` excludes `closed` docs by default**, same as a superseded
+decision — `--history` brings them back (no separate `--all` flag; the
+existing "include non-current" flag already says what this means). Unlike
+`decisions`, there's no supersession graph and no walker: a closed bead
+isn't superseded by anything, so `--history` never adds an annotation line
+for a `work` hit, just includes it.
+
 ### `exclude:` — files in a corpus directory that aren't documents
 
 ctx otherwise treats every `*.md` under a corpus's `path` as a document
@@ -251,4 +278,6 @@ supersession walker (successors/predecessors, fan-out/fan-in, cycle
 detection and its exit codes/warnings), `ctx get --history`'s graph-based
 exclusion and chained annotation (including the no-status-but-superseded
 case) and its budget accounting, `ctx history`'s indented tree output,
-`ctx index --strict`, and per-corpus `exclude:`.
+`ctx index --strict`, per-corpus `exclude:`, and `type: work`'s lint rules
+(status enum, closed requires closed-reason, deps existence) and its
+`--history`-gated closed-doc exclusion (sw-5om).
