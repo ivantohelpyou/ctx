@@ -375,6 +375,14 @@ def lint(config: RigConfig) -> LintReport:
     report = LintReport()
     seen_ids: dict[str, list[str]] = {}
     for spec in config.corpora:
+        if not spec.path.is_dir():
+            # A bad path (typo, wrong-machine absolute path, corpus not
+            # checked out) returns zero documents forever with no signal
+            # otherwise — worse than an empty corpus, so this is an ERROR,
+            # not the warning `ctx index` prints for the same condition
+            # (hq-synj review finding 1).
+            report.errors.append(f"corpus {spec.name!r}: path {spec.path} is not a directory")
+            continue
         all_docs = _load_docs(spec)
         draft_paths = {path for path, doc in all_docs if doc and is_draft_skipped(spec, doc)}
         report.skipped_drafts[spec.name] = len(draft_paths)

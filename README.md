@@ -30,8 +30,17 @@ corpora:
     path: docs/explainers
   shared:
     type: shared
-    path: /home/ivanadamin/gt/docs/shared
+    path: ~/gt/docs/shared
 ```
+
+**`path:` is expanded at load time** — `~` (`expanduser`) and `$VAR`/`${VAR}`
+(`expandvars`, applied first) both work, and a relative path is resolved
+against the rig root. Write the cross-rig `shared` corpus as `~/gt/docs/shared`
+in a *committed* config, never as a resolved absolute path
+(`/home/<you>/gt/docs/shared`) — the literal form only works on the machine
+and user it was written for, and a corpus whose resolved `path` isn't a
+directory returns zero documents forever with no signal on its own (see
+below for how `ctx index`/`ctx lint` surface that instead).
 
 ### What to commit
 
@@ -62,7 +71,17 @@ to run in a fresh clone that already has both tracked (exits 0, "exists,
 left alone"); it only fills in what's actually missing. `ctx init --preset
 explainers|hugo|work|mayor` writes a config shaped for that corpus instead of
 the generic `explainers`-guess default — see `_PRESET_CORPUS` in
-`src/ctx_cli/corpus.py` for what each preset writes.
+`src/ctx_cli/corpus.py` for what each preset writes; the `shared` path it
+writes is the portable `~/gt/docs/shared` form, not a resolved absolute path.
+
+**A corpus whose resolved `path` isn't a directory** (typo, wrong-machine
+absolute path, corpus not yet checked out) is a **`ctx lint` ERROR** naming
+the corpus and the path — worse than an empty corpus, since `iter_corpus_files`
+would otherwise return nothing with no signal at all. `ctx index` (and the
+lazy reindex `ctx get`/`ctx history` trigger) print the same fact as a
+one-line stderr **warning** instead — exit 0, every other corpus still
+indexes; only `ctx lint`, or `ctx index --strict` on an unrelated decisions
+problem, ever refuses to publish.
 
 Frontmatter contract (all corpora): `id`, `title`, `summary` (hand-written,
 required — never auto-generate it), `tags`, `terms` (not `aliases:` — that key
