@@ -127,7 +127,9 @@ def index_cmd(start_dir: Path | None, strict: bool):
 
 @main.command("get")
 @click.argument("query")
-@click.option("--corpus", default=None, help="Limit to one corpus (explainers|decisions|shared).")
+@click.option(
+    "--corpus", default=None, help="Limit to one corpus (explainers|decisions|shared|work)."
+)
 @click.option(
     "--budget", default=DEFAULT_BUDGET, show_default=True, help="Budget in tokens (chars/4)."
 )
@@ -141,8 +143,9 @@ def index_cmd(start_dir: Path | None, strict: bool):
     "--history",
     is_flag=True,
     default=False,
-    help="Include superseded/non-accepted docs, each annotated with what "
-    "replaced it ('(cycle)' if the supersession graph loops).",
+    help="Include superseded/non-accepted decisions (annotated with what "
+    "replaced them; '(cycle)' if the supersession graph loops) and closed "
+    "work-corpus docs (no annotation — a closed bead has no successor).",
 )
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
 def get_cmd(
@@ -161,6 +164,7 @@ def get_cmd(
     except (CtxNotFoundError, ValueError) as e:
         raise click.ClickException(str(e)) from e
     decisions_corpora = [c.name for c in config.corpora if c.type == "decisions"]
+    work_corpora = [c.name for c in config.corpora if c.type == "work"]
     try:
         ensure_fresh_index(config)
         hits = search(
@@ -169,6 +173,7 @@ def get_cmd(
             corpus=corpus,
             history=history,
             decisions_corpora=decisions_corpora,
+            work_corpora=work_corpora,
         )
     except INDEX_ERRORS as e:
         raise click.ClickException(str(e)) from e

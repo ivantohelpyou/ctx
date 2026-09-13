@@ -9,6 +9,10 @@ Per-corpus rules (plan §Schema):
               something else claims to supersede. (Contract + lint ship now;
               the supersession walker used by `ctx get --history` is Phase 3.)
   shared:     total corpus size stays under a fixed byte ceiling.
+  work:       `status`, `priority`, `type`, `created` required; `status` in
+              {open, in_progress, blocked, closed}; a `closed` doc also
+              requires `closed`/`closed-reason`; every `deps` id must name
+              another document in the same corpus (sw-5om, ctx Phase 5b).
   all:        `id`, `title`, `summary` are required and non-empty.
 """
 
@@ -270,6 +274,44 @@ def decisions_structural_errors(config: RigConfig) -> list[str]:
     return errors
 
 
+WORK_VALID_STATUSES = ("open", "in_progress", "blocked", "closed")
+
+
+def _lint_work(spec: CorpusSpec, docs, errors: list[str]) -> None:
+    """`type: work` — the beads-as-markdown pilot corpus (sw-5om). Beyond
+    `_lint_common`'s id/title/summary check: the importer/shim's own
+    frontmatter contract (`status`, `priority`, `type`, `created` present;
+    `closed`/`closed-reason` present once `status` is `closed`), `status` in
+    the enum the shim writes, and every `deps` id resolvable to another
+    document in this same corpus — a dep on a bead ctx never indexed (a
+    different rig, a typo) is exactly the kind of drift `ctx get` must not
+    paper over."""
+    by_id = {doc["id"]: doc for _, doc in docs if doc and doc.get("id")}
+    for path, doc in docs:
+        if not doc:
+            continue
+        for field in ("status", "priority", "type", "created"):
+            if doc.get(field) in (None, "", []):
+                errors.append(f"{spec.name}:{path}: missing required frontmatter field '{field}'")
+
+        status = doc.get("status")
+        if status and status not in WORK_VALID_STATUSES:
+            errors.append(
+                f"{spec.name}:{path}: invalid status {status!r} "
+                f"(must be one of {list(WORK_VALID_STATUSES)})"
+            )
+        if status == "closed":
+            for field in ("closed", "closed-reason"):
+                if doc.get(field) in (None, "", []):
+                    errors.append(
+                        f"{spec.name}:{path}: status is 'closed' but '{field}' is missing"
+                    )
+
+        for dep in fm.as_list(doc.get("deps")):
+            if dep not in by_id:
+                errors.append(f"{spec.name}:{path}: deps references unknown id {dep!r}")
+
+
 def _lint_shared(spec: CorpusSpec, docs, errors: list[str]) -> None:
     total_bytes = sum(path.stat().st_size for path, _ in docs)
     if total_bytes > SHARED_BYTE_CEILING:
@@ -302,6 +344,8 @@ def lint(config: RigConfig) -> LintReport:
             _lint_decisions(spec, docs, report.errors)
         elif spec.type == "shared":
             _lint_shared(spec, docs, report.errors)
+        elif spec.type == "work":
+            _lint_work(spec, docs, report.errors)
 
     for doc_id, locations in sorted(seen_ids.items()):
         if len(locations) > 1:

@@ -106,6 +106,7 @@ def search(
     corpus: str | None = None,
     history: bool = False,
     decisions_corpora: list[str] | None = None,
+    work_corpora: list[str] | None = None,
 ) -> list[Hit]:
     """Run the FTS5 query, status-filtered before ranking, ranked by BM25.
 
@@ -118,6 +119,14 @@ def search(
     when a stray `supersedes:` in its own frontmatter, or in another doc's,
     put it in `supersessions` at all. `None`/`[]` means no corpus in this
     rig is type `decisions`, so nothing is lifecycle-filtered.
+
+    `work_corpora` (sw-5om, ctx Phase 5b) is the analogous list for
+    `type: work` corpora: a closed bead has no supersession graph, so the
+    rule is simpler than decisions' — `status = 'closed'` is excluded by
+    default, same as a superseded decision, and `--history` (reused rather
+    than adding a separate `--all` flag; plan §5b) brings it back. No
+    walker, no annotation: a closed bead isn't superseded by anything, it's
+    just done.
 
     Opens `index.db` read-only: a query never writes to it, so a read-only
     `.ctx/` directory (or a read-only filesystem) must not stop `ctx get` from
@@ -158,6 +167,16 @@ def search(
                 " ))"
             )
             params.extend(decisions_corpora)
+        if not history and work_corpora:
+            # Same shape as the decisions clause above, minus the graph: a
+            # work-corpus doc has no supersession chain, only a status a
+            # closed bead sets and never contests.
+            placeholders = ", ".join(["?"] * len(work_corpora))
+            sql += (
+                f" AND (documents.corpus NOT IN ({placeholders})"
+                " OR (documents.status IS NULL OR documents.status != 'closed'))"
+            )
+            params.extend(work_corpora)
         sql += " ORDER BY rank ASC, documents.id ASC"
         rows = conn.execute(sql, params).fetchall()
         hits = [
