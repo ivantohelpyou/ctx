@@ -177,6 +177,14 @@ def index_cmd(start_dir: Path | None, strict: bool):
     "replaced them; '(cycle)' if the supersession graph loops) and closed "
     "work-corpus docs (no annotation — a closed bead has no successor).",
 )
+@click.option(
+    "--loose",
+    is_flag=True,
+    default=False,
+    help="Return any hit matching any one query word (no relevance floor). By "
+    "default a hit must match at least two of the query's content words, or "
+    "the only one; a query with no such hit returns nothing and logs a miss.",
+)
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
 def get_cmd(
     query: str,
@@ -184,6 +192,7 @@ def get_cmd(
     budget: int,
     limit: int,
     history: bool,
+    loose: bool,
     start_dir: Path | None,
 ):
     """Search the index; print a budgeted, deterministic result set. Warns
@@ -204,6 +213,7 @@ def get_cmd(
             history=history,
             decisions_corpora=decisions_corpora,
             work_corpora=work_corpora,
+            loose=loose,
         )
     except INDEX_ERRORS as e:
         raise click.ClickException(str(e)) from e

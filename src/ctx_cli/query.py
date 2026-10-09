@@ -6,8 +6,13 @@ Output contract (must be deterministic — same query + same index => same bytes
       superseded-by: id — title[; id — title ...]   (--history, if superseded)
       superseded-by: (cycle)                         (--history, if the graph loops)
     ...
-    dropped: id — title
-    ...
+    dropped: id — title          (at most DROPPED_SHOWN lines)
+    dropped: +N more             (if more were cut)
+
+A hit must match at least `min_terms_required()` of the query's content terms
+(stopwords removed) or it is not a result at all — it is neither kept nor
+dropped, so a query whose only matches are one-word coincidences returns
+nothing and is logged as a miss (hq-mb81). `loose=True` restores plain OR.
 
 Bodies are never read at query time; only the index table and FTS5 built from
 frontmatter are consulted.
@@ -21,6 +26,7 @@ import sqlite3
 from pathlib import Path
 
 from .history import head_info
+from .indexer import FTS_TOKENIZE
 
 # title(10), summary(1), terms(5), tags(1) — matches column order in the FTS5
 # table so title and terms outrank a body-shaped summary hit.
@@ -30,6 +36,18 @@ DEFAULT_BUDGET = 1500
 # query... ≤5 entries"). `--limit` overrides. Without this, a query with many
 # small hits and a generous budget can return dozens of entries.
 DEFAULT_LIMIT = 5
+# `dropped:` lines shown before collapsing the rest into one `+N more` line.
+# Uncapped, a broad query on a large corpus printed 100+ dropped lines and
+# ran 2-3x over its budget (hq-x0ra: 105 lines on one sea query).
+DROPPED_SHOWN = 5
+
+# Words that say nothing about which document is meant. OR-ing them in let
+# almost any document match ("heads in beds" matched on "in"); counting them
+# toward coverage would let a coincidence clear the floor (hq-mb81).
+STOPWORDS = frozenset(
+    "a an and are as at be by for from how i in into is it of on or our the "
+    "this that to was we what when where which who why with you your".split()
+)
 
 
 @dataclasses.dataclass
@@ -55,15 +73,67 @@ def _slugify(title: str) -> str:
     return slug or "doc"
 
 
+def _quote(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
+def _fts_tokens(words: list[str]) -> list[tuple[str, ...]]:
+    """Each word's tokens exactly as the index tokenizes them (FTS_TOKENIZE:
+    porter over unicode61), read back through fts5vocab from a throwaway
+    in-memory table. A word's identity is its stemmed tokens, not its
+    spelling: "head" and "heads" are one term, and "_" or "--" is none
+    (hq-mb81 review, round 1)."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(f"CREATE VIRTUAL TABLE t USING fts5(x, tokenize='{FTS_TOKENIZE}')")
+        conn.execute("CREATE VIRTUAL TABLE v USING fts5vocab(t, 'instance')")
+        out = []
+        for i, w in enumerate(words, start=1):
+            conn.execute("INSERT INTO t(rowid, x) VALUES (?, ?)", (i, w))
+            toks = conn.execute("SELECT term FROM v WHERE doc = ? ORDER BY offset", (i,))
+            out.append(tuple(t for (t,) in toks))
+        return out
+    finally:
+        conn.close()
+
+
+def query_terms(query: str) -> list[str]:
+    """The query's content terms, in first-occurrence order: whitespace-split,
+    stopwords removed, words the tokenizer reduces to nothing dropped, and
+    words with the same stemmed tokens collapsed to their first spelling. If
+    every word is a stopword, the stopwords are the terms — a query is never
+    reduced to nothing by the stopword filter."""
+    words = [t for t in re.split(r"\s+", query.strip()) if t]
+    seen: set[tuple[str, ...]] = set()
+    terms: list[str] = []
+    stop: list[bool] = []
+    for w, toks in zip(words, _fts_tokens(words)):
+        if not toks or toks in seen:
+            continue
+        seen.add(toks)
+        terms.append(w)
+        stop.append(re.sub(r"[^0-9a-z]", "", w.lower()) in STOPWORDS)
+    content = [t for t, is_stop in zip(terms, stop) if not is_stop]
+    return content or terms
+
+
+def min_terms_required(n_terms: int) -> int:
+    """How many distinct content terms a hit must match: all of them for a
+    one-term query, otherwise two. Two is the smallest number that stops a
+    single stemmed coincidence ("heads" -> "head") from carrying a hit, while a
+    long, wordy query is not held to matching most of its words."""
+    return min(2, n_terms)
+
+
 def _fts_match_expr(query: str) -> str:
-    """Turn free text into a permissive FTS5 MATCH expression: each word quoted
-    (escapes FTS5 operator characters) and OR'd together, so Porter stemming and
-    partial-term matches both apply."""
-    terms = [t for t in re.split(r"\s+", query.strip()) if t]
+    """Turn free text into a permissive FTS5 MATCH expression: each content
+    term quoted (escapes FTS5 operator characters) and OR'd together, so
+    Porter stemming and partial-term matches both apply. Stopwords are left
+    out (see `query_terms`)."""
+    terms = query_terms(query)
     if not terms:
         return '""'
-    escaped = ['"' + t.replace('"', '""') + '"' for t in terms]
-    return " OR ".join(escaped)
+    return " OR ".join(_quote(t) for t in terms)
 
 
 def format_hit(hit: Hit) -> str:
@@ -100,6 +170,23 @@ def _rendered_char_len(hit: Hit) -> int:
     return length
 
 
+def _apply_term_floor(conn: sqlite3.Connection, rows: list, terms: list[str]) -> list:
+    """Keep only rows matching at least `min_terms_required(len(terms))`
+    distinct terms. Coverage is measured with the same FTS5 index and
+    tokenizer as the ranking query (one MATCH per term, so stemming agrees),
+    and rank order is preserved — the floor only removes rows."""
+    need = min_terms_required(len(terms))
+    if need <= 1 or not rows:
+        return rows
+    coverage: dict[int, int] = {}
+    for term in terms:
+        for (rid,) in conn.execute(
+            "SELECT rowid FROM documents_fts WHERE documents_fts MATCH ?", (_quote(term),)
+        ):
+            coverage[rid] = coverage.get(rid, 0) + 1
+    return [r for r in rows if coverage.get(r["rid"], 0) >= need]
+
+
 def search(
     index_db_path: Path,
     query: str,
@@ -107,6 +194,7 @@ def search(
     history: bool = False,
     decisions_corpora: list[str] | None = None,
     work_corpora: list[str] | None = None,
+    loose: bool = False,
 ) -> list[Hit]:
     """Run the FTS5 query, status-filtered before ranking, ranked by BM25.
 
@@ -137,8 +225,8 @@ def search(
     try:
         match_expr = _fts_match_expr(query)
         sql = (
-            "SELECT documents.id, documents.corpus, documents.path, documents.title, "
-            "documents.summary, documents.status, "
+            "SELECT documents.rowid AS rid, documents.id, documents.corpus, "
+            "documents.path, documents.title, documents.summary, documents.status, "
             "bm25(documents_fts, ?, ?, ?, ?) AS rank "
             "FROM documents_fts JOIN documents ON documents.rowid = documents_fts.rowid "
             "WHERE documents_fts MATCH ?"
@@ -179,6 +267,8 @@ def search(
             params.extend(work_corpora)
         sql += " ORDER BY rank ASC, documents.id ASC"
         rows = conn.execute(sql, params).fetchall()
+        if not loose:
+            rows = _apply_term_floor(conn, rows, query_terms(query))
         hits = [
             Hit(
                 id=r["id"],
@@ -241,5 +331,7 @@ def render(kept: list[Hit], dropped: list[Hit]) -> str:
         annotation = format_superseded_by(h)
         if annotation:
             lines.append(annotation)
-    lines += [format_dropped(h) for h in dropped]
+    lines += [format_dropped(h) for h in dropped[:DROPPED_SHOWN]]
+    if len(dropped) > DROPPED_SHOWN:
+        lines.append(f"dropped: +{len(dropped) - DROPPED_SHOWN} more")
     return "\n".join(lines) + ("\n" if lines else "")
