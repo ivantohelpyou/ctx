@@ -33,7 +33,11 @@ from .corpus import (
 )
 from .lint import decisions_structural_errors
 
-SCHEMA = """
+# The FTS5 tokenizer, named once: query.py tokenizes query terms with the same
+# spec so a term's identity (its stemmed tokens) agrees with the index's.
+FTS_TOKENIZE = "porter"
+
+SCHEMA = f"""
 CREATE TABLE documents (
     rowid INTEGER PRIMARY KEY,
     id TEXT UNIQUE NOT NULL,
@@ -61,7 +65,7 @@ CREATE TABLE meta (
 
 CREATE VIRTUAL TABLE documents_fts USING fts5(
     title, summary, terms, tags,
-    tokenize='porter',
+    tokenize='{FTS_TOKENIZE}',
     content='documents', content_rowid='rowid'
 );
 """

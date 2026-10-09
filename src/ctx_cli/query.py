@@ -26,6 +26,7 @@ import sqlite3
 from pathlib import Path
 
 from .history import head_info
+from .indexer import FTS_TOKENIZE
 
 # title(10), summary(1), terms(5), tags(1) — matches column order in the FTS5
 # table so title and terms outrank a body-shaped summary hit.
@@ -76,21 +77,43 @@ def _quote(term: str) -> str:
     return '"' + term.replace('"', '""') + '"'
 
 
+def _fts_tokens(words: list[str]) -> list[tuple[str, ...]]:
+    """Each word's tokens exactly as the index tokenizes them (FTS_TOKENIZE:
+    porter over unicode61), read back through fts5vocab from a throwaway
+    in-memory table. A word's identity is its stemmed tokens, not its
+    spelling: "head" and "heads" are one term, and "_" or "--" is none
+    (hq-mb81 review, round 1)."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(f"CREATE VIRTUAL TABLE t USING fts5(x, tokenize='{FTS_TOKENIZE}')")
+        conn.execute("CREATE VIRTUAL TABLE v USING fts5vocab(t, 'instance')")
+        out = []
+        for i, w in enumerate(words, start=1):
+            conn.execute("INSERT INTO t(rowid, x) VALUES (?, ?)", (i, w))
+            toks = conn.execute("SELECT term FROM v WHERE doc = ? ORDER BY offset", (i,))
+            out.append(tuple(t for (t,) in toks))
+        return out
+    finally:
+        conn.close()
+
+
 def query_terms(query: str) -> list[str]:
-    """The query's content terms: whitespace-split, de-duplicated (first
-    occurrence wins, so order is deterministic), stopwords removed. If every
-    word is a stopword, the words themselves are the terms — a query is never
-    reduced to nothing by this filter."""
+    """The query's content terms, in first-occurrence order: whitespace-split,
+    stopwords removed, words the tokenizer reduces to nothing dropped, and
+    words with the same stemmed tokens collapsed to their first spelling. If
+    every word is a stopword, the stopwords are the terms — a query is never
+    reduced to nothing by the stopword filter."""
     words = [t for t in re.split(r"\s+", query.strip()) if t]
-    seen: set[str] = set()
+    seen: set[tuple[str, ...]] = set()
     terms: list[str] = []
-    for w in words:
-        key = re.sub(r"[^\w]", "", w.lower())
-        if not key or key in seen:
+    stop: list[bool] = []
+    for w, toks in zip(words, _fts_tokens(words)):
+        if not toks or toks in seen:
             continue
-        seen.add(key)
+        seen.add(toks)
         terms.append(w)
-    content = [t for t in terms if re.sub(r"[^\w]", "", t.lower()) not in STOPWORDS]
+        stop.append(re.sub(r"[^0-9a-z]", "", w.lower()) in STOPWORDS)
+    content = [t for t, is_stop in zip(terms, stop) if not is_stop]
     return content or terms
 
 

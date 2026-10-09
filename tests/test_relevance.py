@@ -176,3 +176,39 @@ def test_capped_output_stays_near_budget_on_a_broad_query(rig_dir):
     out = render(*apply_budget(search(config.index_db_path, "widget config"), budget=budget))
     dropped_chars = sum(len(line) + 1 for line in out.splitlines() if line.startswith("dropped:"))
     assert dropped_chars / 4 < 60  # bounded, not proportional to the 195 cut hits
+
+
+# --- review round 1 (hq-mb81): term identity is the tokenizer's, not spelling
+
+
+def test_inflections_of_one_word_are_one_term(rig_dir):
+    config = _noise_rig(rig_dir)
+    assert query_terms("head heads") == ["head"]
+    assert query_terms("backup backups Backups.") == ["backup"]
+    # one term, so "head heads" is exactly the one-word query "head" ...
+    ids = [h.id for h in search(config.index_db_path, "head")]
+    assert [h.id for h in search(config.index_db_path, "head heads")] == ids
+    # ... and a repeated inflection can no longer count twice toward the floor
+    assert search(config.index_db_path, "heads head beds") == []
+
+
+def test_words_the_tokenizer_drops_are_not_terms(rig_dir):
+    _write(rig_dir, "a-1", "a-1", "Nightly rebuild", "the sync_survey_index job rebuilds nightly")
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    assert query_terms("nightly _ -- __") == ["nightly"]
+    for q in ("nightly _", "nightly - _"):
+        assert [h.id for h in search(config.index_db_path, q)] == ["a-1"], q
+
+
+def test_underscored_identifier_is_one_multi_token_term(rig_dir):
+    _write(rig_dir, "a-1", "a-1", "Nightly rebuild", "the sync_survey_index job rebuilds nightly")
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    assert query_terms("sync_survey_index nightly") == ["sync_survey_index", "nightly"]
+    assert [h.id for h in search(config.index_db_path, "sync_survey_index nightly")] == ["a-1"]
+
+
+def test_stemmed_stopword_is_still_a_stopword():
+    # porter stems "this" -> "thi"; the stopword test must not depend on stems
+    assert query_terms("this survey was archived") == ["survey", "archived"]
