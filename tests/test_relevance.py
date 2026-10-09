@@ -281,3 +281,15 @@ def test_nothing_at_all_prints_nothing(rig_dir):
 def test_weak_leads_respect_the_corpus_filter(rig_dir):
     _synonym_rig(rig_dir)
     assert _get(rig_dir, "facets categories collections", "--corpus", "explainers") == []
+
+
+def test_weak_leads_honour_the_lifecycle_filter(rig_dir):
+    """agent-1 review (PR #2): the weak search must apply the same
+    supersession/status filter as the main one. In the fixture adr-001 is
+    superseded by adr-002; both match only 'database' of 'database zebra', so
+    the floor empties the result and both are weak candidates."""
+    default = "\n".join(_get(rig_dir, "database zebra"))
+    assert "weak: adr-002 — " in default
+    assert "weak: adr-001 — " not in default  # superseded: hidden by default
+    history = "\n".join(_get(rig_dir, "database zebra", "--history"))
+    assert "weak: adr-001 — " in history
