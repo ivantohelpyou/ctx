@@ -9,10 +9,16 @@ Output contract (must be deterministic — same query + same index => same bytes
     dropped: id — title          (at most DROPPED_SHOWN lines)
     dropped: +N more             (if more were cut)
 
+or, when the relevance floor leaves nothing:
+
+    weak: id — title — path#slug (at most WEAK_SHOWN lines; logged as a miss)
+
 A hit must match at least `min_terms_required()` of the query's content terms
 (stopwords removed) or it is not a result at all — it is neither kept nor
 dropped, so a query whose only matches are one-word coincidences returns
 nothing and is logged as a miss (hq-mb81). `loose=True` restores plain OR.
+When the floor leaves nothing, the best one-word matches are shown as `weak:`
+lines — a lead, labelled as such, never an answer (`render_weak`).
 
 Bodies are never read at query time; only the index table and FTS5 built from
 frontmatter are consulted.
@@ -40,6 +46,10 @@ DEFAULT_LIMIT = 5
 # Uncapped, a broad query on a large corpus printed 100+ dropped lines and
 # ran 2-3x over its budget (hq-x0ra: 105 lines on one sea query).
 DROPPED_SHOWN = 5
+# `weak:` lines shown when the floor leaves no result. A synonym list ("facets
+# categories collections") can have good documents that each match one word;
+# a bare miss would hide them, five unlabelled hits would be the old noise.
+WEAK_SHOWN = 3
 
 # Words that say nothing about which document is meant. OR-ing them in let
 # almost any document match ("heads in beds" matched on "in"); counting them
@@ -153,6 +163,17 @@ def format_superseded_by(hit: Hit) -> str | None:
         return None
     parts = "; ".join(f"{head_id} — {head_title}" for head_id, head_title in hit.superseded_by)
     return f"  superseded-by: {parts}"
+
+
+def format_weak(hit: Hit) -> str:
+    return f"weak: {hit.id} — {hit.title} — {hit.path}#{_slugify(hit.title)}"
+
+
+def render_weak(weak: list[Hit]) -> str:
+    """Up to WEAK_SHOWN below-floor hits, in rank order, one line each — no
+    summary, so a lead costs a line, not a paragraph."""
+    lines = [format_weak(h) for h in weak[:WEAK_SHOWN]]
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def format_dropped(hit: Hit) -> str:

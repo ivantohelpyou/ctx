@@ -10,8 +10,9 @@ Before grepping around this rig, run:
 It searches hand-written summaries (not file bodies) and returns ranked hits as
 `id — title — path#slug — summary`, plus up to five `dropped:` lines for what
 the budget excluded. A hit must match at least two of the query's words (or
-the only one), so no output means nothing in the corpus answers it — add
-`--loose` to see one-word matches. Read the one or two files it names; don't
+the only one). If nothing does, you get up to three `weak:` lines instead —
+one-word matches, leads not answers; open one only if its title fits.
+`--loose` returns one-word matches as ordinary results. Read the one or two files it names; don't
 scan the corpus.
 A superseded decision is never returned this way — add `--history` to see it,
 annotated with `superseded-by: <id> — <title>` (the current head, not just
