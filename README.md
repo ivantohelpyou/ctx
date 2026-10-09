@@ -225,14 +225,23 @@ dropped: id — title          (at most 5 lines)
 dropped: +N more             (if more were cut)
 ```
 
+or, when nothing clears the relevance floor:
+
+```
+weak: id — title — path#slug   (at most 3; the query is logged as a miss)
+```
+
 `ctx get` never scans document bodies at query time — only the frontmatter
 index. Read the one or two files it names.
 
 **Relevance floor.** Stopwords (`in`, `the`, `how`, …) are left out of the
 match, and a hit must match at least two of the query's remaining words, or
 the only one if there is just one. A query whose only matches are one-word
-coincidences returns nothing and is logged as a miss, so the miss log shows
-the gap instead of five confident wrong answers. `--loose` turns the floor off
+coincidences returns no results and is logged as a miss, so the miss log
+shows the gap instead of five confident wrong answers. It still prints up to
+three `weak:` lines (the best one-word matches, no summary): a synonym list
+like "facets categories collections" can have good documents that each match
+only one word, and a lead labelled as weak is better than silence. `--loose` turns the floor off
 (any hit matching any one word). Measured on 19 real logged queries
 (2026-10-09): every noise answer became a miss, every good top hit was kept.
 
