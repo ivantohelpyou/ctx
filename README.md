@@ -221,12 +221,20 @@ id — title — path#slug — summary
   superseded-by: id — title[; id — title ...]   (--history, if superseded)
   superseded-by: (cycle)                         (--history, if the graph loops)
 ...
-dropped: id — title
-...
+dropped: id — title          (at most 5 lines)
+dropped: +N more             (if more were cut)
 ```
 
 `ctx get` never scans document bodies at query time — only the frontmatter
 index. Read the one or two files it names.
+
+**Relevance floor.** Stopwords (`in`, `the`, `how`, …) are left out of the
+match, and a hit must match at least two of the query's remaining words, or
+the only one if there is just one. A query whose only matches are one-word
+coincidences returns nothing and is logged as a miss, so the miss log shows
+the gap instead of five confident wrong answers. `--loose` turns the floor off
+(any hit matching any one word). Measured on 19 real logged queries
+(2026-10-09): every noise answer became a miss, every good top hit was kept.
 
 ## Supersession: the walker and `--history`
 
