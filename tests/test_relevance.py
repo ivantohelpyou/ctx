@@ -15,6 +15,7 @@ from ctx_cli.corpus import load_config
 from ctx_cli.indexer import build_index
 from ctx_cli.query import (
     DROPPED_SHOWN,
+    WEAK_SHOWN,
     apply_budget,
     min_terms_required,
     query_terms,
@@ -87,11 +88,13 @@ def test_loose_restores_the_old_or_behaviour(rig_dir):
     assert "pos-99" in [h.id for h in hits]
 
 
-def test_below_floor_query_prints_nothing_and_logs_a_miss(rig_dir):
+def test_below_floor_query_prints_only_weak_leads_and_logs_a_miss(rig_dir):
     config = _noise_rig(rig_dir)
     result = CliRunner().invoke(main, ["get", "heads in beds hib page", "--dir", str(rig_dir)])
     assert result.exit_code == 0, result.output
-    assert result.output == ""
+    lines = result.output.splitlines()
+    assert lines and all(line.startswith("weak: ") for line in lines)
+    assert any(line.startswith("weak: pos-99 — ") for line in lines)
     assert "heads in beds hib page" in _misses(config)
 
 
@@ -212,3 +215,81 @@ def test_underscored_identifier_is_one_multi_token_term(rig_dir):
 def test_stemmed_stopword_is_still_a_stopword():
     # porter stems "this" -> "thi"; the stopword test must not depend on stems
     assert query_terms("this survey was archived") == ["survey", "archived"]
+
+
+# --- weak leads when the floor leaves nothing (hq-mb81 follow-up) ------------
+
+
+def _synonym_rig(rig_dir):
+    """Good documents that each match one word of a synonym list."""
+    _write(
+        rig_dir, "e-192", "e-192", "Categories: a front page of picture boxes", "one box per work"
+    )
+    _write(rig_dir, "e-170", "e-170", "Facets and signage", "how a visitor narrows the works")
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    return config
+
+
+def _get(rig_dir, *args):
+    result = CliRunner().invoke(main, ["get", *args, "--dir", str(rig_dir)])
+    assert result.exit_code == 0, result.output
+    return result.output.splitlines()
+
+
+def test_synonym_list_gets_weak_leads_not_silence(rig_dir):
+    config = _synonym_rig(rig_dir)
+    lines = _get(rig_dir, "facets categories collections")
+    ids = {line.split(" — ")[0].removeprefix("weak: ") for line in lines}
+    assert all(line.startswith("weak: ") for line in lines)
+    assert {"e-192", "e-170"} <= ids
+    # a lead names the file to open, and carries no summary
+    assert "weak: e-170 — Facets and signage — " in "\n".join(lines)
+    assert all("one box per work" not in line for line in lines)
+    assert "facets categories collections" in _misses(config)
+
+
+def test_no_weak_lines_when_a_real_result_exists(rig_dir):
+    _synonym_rig(rig_dir)
+    lines = _get(rig_dir, "facets signage")
+    assert lines[0].startswith("e-170 — ")
+    assert not any(line.startswith("weak:") for line in lines)
+
+
+def test_weak_leads_are_capped(rig_dir):
+    for i in range(10):
+        name = f"w-{i:02d}"
+        _write(rig_dir, name, name, f"Gizmo {i}", f"note {i}")
+    config = load_config(rig_dir / ".ctx")
+    build_index(config)
+    lines = _get(rig_dir, "gizmo sprocket")
+    assert len(lines) == WEAK_SHOWN
+    assert all(line.startswith("weak: ") for line in lines)
+
+
+def test_loose_prints_no_weak_lines(rig_dir):
+    _synonym_rig(rig_dir)
+    lines = _get(rig_dir, "facets categories collections", "--loose")
+    assert lines and not any(line.startswith("weak:") for line in lines)
+
+
+def test_nothing_at_all_prints_nothing(rig_dir):
+    _synonym_rig(rig_dir)
+    assert _get(rig_dir, "zebra xylophone") == []
+
+
+def test_weak_leads_respect_the_corpus_filter(rig_dir):
+    _synonym_rig(rig_dir)
+    assert _get(rig_dir, "facets categories collections", "--corpus", "explainers") == []
+
+
+def test_weak_leads_honour_the_lifecycle_filter(rig_dir):
+    """agent-1 review (PR #2): the weak search must apply the same
+    supersession/status filter as the main one. In the fixture adr-001 is
+    superseded by adr-002; both match only 'database' of 'database zebra', so
+    the floor empties the result and both are weak candidates."""
+    default = "\n".join(_get(rig_dir, "database zebra"))
+    assert "weak: adr-002 — " in default
+    assert "weak: adr-001 — " not in default  # superseded: hidden by default
+    history = "\n".join(_get(rig_dir, "database zebra", "--history"))
+    assert "weak: adr-001 — " in history

@@ -36,7 +36,7 @@ from .history import history_view
 from .indexer import DuplicateIdError, build_index, ensure_fresh_index
 from .lint import decisions_structural_errors
 from .lint import lint as run_lint
-from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, search
+from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, render_weak, search
 from .templates import ROUTING_TEMPLATE
 
 # Errors that mean "the index/corpus is broken in a known way" — reported as a
@@ -183,7 +183,8 @@ def index_cmd(start_dir: Path | None, strict: bool):
     default=False,
     help="Return any hit matching any one query word (no relevance floor). By "
     "default a hit must match at least two of the query's content words, or "
-    "the only one; a query with no such hit returns nothing and logs a miss.",
+    "the only one; a query with no such hit prints up to 3 'weak:' leads "
+    "(one-word matches, labelled) and logs a miss.",
 )
 @click.option("--dir", "start_dir", type=click.Path(path_type=Path), default=None)
 def get_cmd(
@@ -215,11 +216,25 @@ def get_cmd(
             work_corpora=work_corpora,
             loose=loose,
         )
+        weak = []
+        if not hits and not loose:
+            # The floor left nothing: show the best one-word matches as
+            # labelled leads. Same filters (corpus, history), floor off.
+            weak = search(
+                config.index_db_path,
+                query,
+                corpus=corpus,
+                history=history,
+                decisions_corpora=decisions_corpora,
+                work_corpora=work_corpora,
+                loose=True,
+            )
     except INDEX_ERRORS as e:
         raise click.ClickException(str(e)) from e
 
     kept, dropped = apply_budget(hits, budget, limit=limit)
     click.echo(render(kept, dropped), nl=False)
+    click.echo(render_weak(weak), nl=False)
     if any(h.cycle for h in kept):
         click.echo(
             "warning: supersession graph has a cycle — index is corrupt, run ctx lint", err=True
