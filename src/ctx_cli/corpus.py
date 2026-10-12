@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import json
 import os
 from pathlib import Path
 
@@ -269,7 +270,10 @@ def default_config_yaml(shared_path: Path | str | None, preset: str = "explainer
         f"    path: {path}\n"
     )
     if shared_path:
-        config += "  shared:\n    type: shared\n" f"    path: {shared_path}\n"
+        # Quoted (JSON strings are valid YAML): a path with ": " or "#" would
+        # otherwise write a config that fails to parse. `~` is expanded after
+        # parsing, so quoting doesn't change what it resolves to.
+        config += "  shared:\n    type: shared\n" f"    path: {json.dumps(str(shared_path))}\n"
     return config
 
 

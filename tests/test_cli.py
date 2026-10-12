@@ -152,18 +152,37 @@ def test_init_shared_from_flag_or_env_flag_wins(tmp_path):
     for d in (a, b, c):
         d.mkdir()
     flag_wins = _init_config(a, ["--shared", "~/flag/shared"], env={"CTX_SHARED_DIR": "~/env"})
-    assert "path: ~/flag/shared" in flag_wins
-    assert "path: ~/env/shared" in _init_config(b, [], env={"CTX_SHARED_DIR": "~/env/shared"})
-    assert "path: /srv/notes" in _init_config(c, ["--shared", "/srv/notes"])
+    assert 'path: "~/flag/shared"' in flag_wins
+    assert 'path: "~/env/shared"' in _init_config(b, [], env={"CTX_SHARED_DIR": "~/env/shared"})
+    assert 'path: "/srv/notes"' in _init_config(c, ["--shared", "/srv/notes"])
 
 
-def test_init_writes_home_paths_in_tilde_form(tmp_path):
+def test_init_writes_home_paths_in_tilde_form(tmp_path, monkeypatch):
     """The shell expands `~` before ctx sees it; the committed config must
     still say `~/...`, or it only works for this user."""
-    from pathlib import Path
-    config = _init_config(tmp_path, ["--shared", str(Path.home() / "notes" / "shared")])
-    assert "path: ~/notes/shared" in config
-    assert str(Path.home()) not in config
+    home = tmp_path / "home" / "someone"
+    monkeypatch.setenv("HOME", str(home))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = _init_config(repo, ["--shared", str(home / "notes" / "shared")])
+    assert 'path: "~/notes/shared"' in config
+    assert str(home) not in config
+
+
+def test_init_shared_path_with_yaml_specials_round_trips(tmp_path):
+    """`: ` and `#` in a path must not break the YAML (review finding)."""
+    from ctx_cli.corpus import load_config
+    _init_config(tmp_path, ["--shared", "/srv/my notes: #1"])
+    shared = next(c for c in load_config(tmp_path / ".ctx").corpora if c.name == "shared")
+    assert str(shared.path) == "/srv/my notes: #1"
+
+
+def test_init_mayor_preset_says_shared_flag_is_ignored(tmp_path):
+    args = ["init", "--dir", str(tmp_path), "--preset", "mayor", "--shared", "/x"]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0
+    assert "--shared ignored" in result.output
+    assert "/x" not in (tmp_path / ".ctx" / "config.yaml").read_text()
 
 
 def test_routing_template_names_no_private_location():

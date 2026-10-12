@@ -58,6 +58,8 @@ def portable_path(path: str) -> str:
     before ctx sees it; writing that absolute path into a committed config
     would tie the config to this user."""
     home = str(Path.home())
+    if home == "/":  # no real home directory (some containers): leave paths alone
+        return path
     if path == home or path.startswith(home + "/"):
         return "~" + path[len(home):]
     return path
@@ -103,6 +105,10 @@ def init_cmd(target_dir: Path | None, preset: str, shared: str | None):
     (ctx_dir / CHECKPOINTS_DIRNAME).mkdir(exist_ok=True)
 
     config_path = ctx_dir / CONFIG_FILENAME
+    if preset == "mayor" and shared:
+        click.echo(
+            "--shared ignored: the mayor preset's shared corpus is its own docs/shared", err=True
+        )
     if not config_path.exists():
         config_path.write_text(
             default_config_yaml(
