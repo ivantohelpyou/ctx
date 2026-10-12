@@ -1,7 +1,7 @@
 [project]
 name = "ctx-cli"
 version = "0.1.0"
-description = "Token-lean context retrieval over explainer, decision, and shared corpora (hq-jdeh)"
+description = "Answers a coding agent's context questions from your own markdown notes, token-budgeted (SQLite FTS5, no embeddings)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
