@@ -3,7 +3,7 @@
 ROUTING_TEMPLATE = """\
 # Routing
 
-Before grepping around this rig, run:
+Before grepping around this repo, run:
 
     ctx get "<what you're looking for>" [--corpus explainers|decisions|shared] [--budget N]
 
@@ -21,8 +21,8 @@ its direct successor).
     ctx history <id>            a decision's supersession chain, oldest to
                                  newest, marking the current head
 
-Corpora configured for this rig are in `.ctx/config.yaml`. `shared` is
-cross-rig, at `~/gt/docs/shared/` — conventions and lessons, nothing local.
+Corpora configured for this repo are in `.ctx/config.yaml`. A `shared`
+corpus, if there is one, holds conventions and lessons shared across repos.
 
 Session start: read `.ctx/checkpoints/current.md` if it exists — that's where
 the last session left off. End a session (or before `/clear`) with:

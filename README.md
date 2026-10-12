@@ -102,8 +102,8 @@ ctx get "token budget"
 ctx lint                 # check frontmatter, decision links, and which code each explainer covers
 ```
 
-`ctx init` writes a `shared` corpus pointing at `~/gt/docs/shared`, the author's own location for
-cross-repo notes. Point it at yours, or delete that entry.
+To also search notes you share across several repos, add a `shared` corpus:
+`ctx init --shared ~/notes/shared`, or set `CTX_SHARED_DIR` once in your shell profile.
 
 ### With a coding agent
 
@@ -125,7 +125,7 @@ ctx checkpoint "indexed explainers; next: point the docs corpus at the Hugo site
 
 | Command | What it does |
 |---|---|
-| `ctx init [--preset explainers\|hugo\|work\|mayor]` | Create `.ctx/` with a config shaped for the preset |
+| `ctx init [--preset explainers\|hugo\|work\|mayor] [--shared PATH]` | Create `.ctx/` with a config shaped for the preset |
 | `ctx index [--strict]` | Build the index (`--strict`: refuse to publish if decision links are broken) |
 | `ctx get "<question>" [--budget N] [--limit N] [--corpus NAME] [--history] [--loose]` | Ask (defaults: 1,500 tokens, 5 hits) |
 | `ctx history <id>` | A decision's supersession chain, oldest to newest |
