@@ -223,8 +223,8 @@ def load_config(ctx_dir: Path | None = None) -> RigConfig:
 
 VALID_INIT_PRESETS = ("explainers", "hugo", "work", "mayor")
 
-# preset -> (corpus name, type, path) for the rig-specific corpus. Every
-# preset but `mayor` also gets a `shared` corpus pointing at shared_path.
+# preset -> (corpus name, type, path) for the repo's own corpus. Every
+# preset but `mayor` also gets a `shared` corpus when a shared_path is given.
 # Named to match the corpus a real rig already runs (hq-synj): sea =
 # explainers, research = docs (type hugo), speakeasy = work (type work) —
 # `ctx init --preset <shape>` writes the config a rig actually needs instead
@@ -236,7 +236,7 @@ _PRESET_CORPUS = {
 }
 
 
-def default_config_yaml(shared_path: Path | str, preset: str = "explainers") -> str:
+def default_config_yaml(shared_path: Path | str | None, preset: str = "explainers") -> str:
     """Template written by `ctx init [--preset <preset>]` (default:
     `explainers`, the original generic guess — path is a guess the operator
     may still need to edit). `mayor` is the one preset without a `shared`
@@ -244,9 +244,9 @@ def default_config_yaml(shared_path: Path | str, preset: str = "explainers") -> 
     corpora, not the cross-rig target every other preset points at.
 
     `shared_path` is written verbatim (a `~`-form string, by convention —
-    see `SHARED_CORPUS_DEFAULT` in cli.py — so the committed config reads
-    the same on any machine/user; `load_config` expands `~`/env vars, not
-    this function)."""
+    see `portable_path` in cli.py — so the committed config reads the same on
+    any machine/user; `load_config` expands `~`/env vars, not this function).
+    None (the default when nothing asks for one) writes no `shared` corpus."""
     if preset == "mayor":
         return (
             "corpora:\n"
@@ -262,15 +262,15 @@ def default_config_yaml(shared_path: Path | str, preset: str = "explainers") -> 
             f"unknown preset {preset!r}, must be one of {VALID_INIT_PRESETS}"
         )
     name, ctype, path = _PRESET_CORPUS[preset]
-    return (
+    config = (
         "corpora:\n"
         f"  {name}:\n"
         f"    type: {ctype}\n"
         f"    path: {path}\n"
-        "  shared:\n"
-        "    type: shared\n"
-        f"    path: {shared_path}\n"
     )
+    if shared_path:
+        config += "  shared:\n    type: shared\n" f"    path: {shared_path}\n"
+    return config
 
 
 def iter_corpus_files(spec: CorpusSpec):
