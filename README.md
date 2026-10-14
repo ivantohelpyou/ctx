@@ -25,8 +25,8 @@ says so (and logs the question), instead of returning five confident wrong answe
   and every answer comes back byte-for-byte identical.
 - **Token-budgeted.** `--budget 800` fills to about 800 tokens with the best hits, then lists
   what it dropped.
-- **Misses are data.** Every question that found nothing is logged: that's your list of notes to
-  write.
+- **Misses are data.** Every question that found nothing is logged: that's the list of notes to
+  write next, and the agent that hit the miss is usually the one that writes the note.
 
 ## Does it help? Measured
 
@@ -56,8 +56,10 @@ on the same 19 questions:
 
 ## How it works
 
-You keep short markdown notes, each starting with frontmatter that includes a **hand-written
-one-sentence summary**:
+Your repo keeps short markdown notes, each starting with frontmatter that includes a
+**one-sentence summary written at the time the thing was decided**. Who writes them is whoever
+did the work. In a repo run by coding agents that is the agent, at the end of the task, as part
+of "done"; a person reviews the note, not the index. Nothing here is typed after the fact:
 
 ```markdown
 ---
@@ -76,9 +78,10 @@ date: 2026-09-01
 stemming and BM25 ranking. `ctx get` searches it, applies the relevance floor and the budget, and
 prints one line per hit. It never reads document bodies at query time.
 
-The summaries are the point. A summary written by the person who made the decision is a better
-search target than any chunk of the body, and it is what the agent reads first. ctx never
-generates them, and `ctx lint` fails a note without one.
+The summaries are the point. A summary written by whoever made the decision, at the moment they
+made it, is a better search target than any chunk of the body, and it is what the next agent
+reads first. ctx never generates summaries itself, by design: a summary invented later by a
+model that was not there is a guess dressed as a record. `ctx lint` fails a note without one.
 
 Three kinds of notes are built in, and you can point ctx at any directory of markdown:
 
