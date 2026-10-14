@@ -26,12 +26,7 @@ never touched, only its CLI was invoked):
    studio` — the ship is now in `station ls`, alongside pilot-station and
    faigin.
 
-**Registered and visible:** `station ls` lists `ctx` (`10383e6f`) at
-`<this repo>`. `station scan`'s roots are `~/pilot-station`,
-`~/.sea/projects`, `~/gt` — `~/projects/` isn't scanned automatically, so
-`adopt` was run by explicit path rather than picked up by a bare `scan`.
-(`strategy`, the tool this one is modeled on, is in the same boat and isn't
-in `station ls` either — a Pilot Station config question, not a `ctx` one.)
+**Registered:** the ship is registered with the SEA station by explicit path (its id is in `.sea/project.json`).
 
 **Still true:** FTS5 (`index.db`) is correctly outside this SEA ship — it's
 the disposable half, rebuilt from markdown on every `ctx index`, with no
