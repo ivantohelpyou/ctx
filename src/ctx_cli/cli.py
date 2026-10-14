@@ -14,6 +14,7 @@ ctx checkpoint "<note>"         append session state to checkpoints/current.md
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -43,11 +44,25 @@ from .templates import ROUTING_TEMPLATE
 # clean one-line, non-zero-exit message, never a raw traceback.
 INDEX_ERRORS = (DuplicateIdError, sqlite3.Error, OSError)
 
-# Written literally into config.yaml — NOT resolved via Path.home() — so a
-# committed config (sea/research/speakeasy all commit `shared`'s path) reads
-# the same on any machine/user; `~` is expanded at load time (corpus.py,
-# hq-synj review finding 1), not at `ctx init` time.
-SHARED_CORPUS_DEFAULT = "~/gt/docs/shared"
+# A `shared` corpus (notes shared across several repos) is written only when
+# asked for: `ctx init --shared PATH`, or CTX_SHARED_DIR in the environment.
+# There is no default location. The path is written in `~` form, so a committed
+# config reads the same on any machine; `~` is expanded at load time
+# (corpus.py), not at `ctx init` time.
+SHARED_ENV = "CTX_SHARED_DIR"
+
+
+def portable_path(path: str) -> str:
+    """`~/x` for a path under the home directory. A shell expands `~` in
+    `--shared ~/notes` and in an unquoted `export CTX_SHARED_DIR=~/notes`
+    before ctx sees it; writing that absolute path into a committed config
+    would tie the config to this user."""
+    home = str(Path.home())
+    if home == "/":  # no real home directory (some containers): leave paths alone
+        return path
+    if path == home or path.startswith(home + "/"):
+        return "~" + path[len(home):]
+    return path
 
 
 @click.group(help=__doc__)
@@ -75,7 +90,14 @@ GITIGNORE_LINES = (
     help="starter config.yaml shaped for a known corpus type, instead of the "
     "generic explainers guess (explainers/hugo/work/mayor).",
 )
-def init_cmd(target_dir: Path | None, preset: str):
+@click.option(
+    "--shared",
+    "shared",
+    default=None,
+    help=f"also add a `shared` corpus at this path (notes shared across repos). "
+    f"Default: ${SHARED_ENV} if set, else no shared corpus.",
+)
+def init_cmd(target_dir: Path | None, preset: str, shared: str | None):
     """Scaffold `.ctx/` at TARGET_DIR (default: cwd)."""
     rig_root = (target_dir or Path.cwd()).resolve()
     ctx_dir = rig_root / CTX_DIRNAME
@@ -83,9 +105,17 @@ def init_cmd(target_dir: Path | None, preset: str):
     (ctx_dir / CHECKPOINTS_DIRNAME).mkdir(exist_ok=True)
 
     config_path = ctx_dir / CONFIG_FILENAME
+    if preset == "mayor" and shared:
+        click.echo(
+            "--shared ignored: the mayor preset's shared corpus is its own docs/shared", err=True
+        )
     if not config_path.exists():
         config_path.write_text(
-            default_config_yaml(SHARED_CORPUS_DEFAULT, preset=preset), encoding="utf-8"
+            default_config_yaml(
+                portable_path(shared) if (shared := shared or os.environ.get(SHARED_ENV)) else None,
+                preset=preset,
+            ),
+            encoding="utf-8",
         )
         click.echo(f"wrote {config_path}")
     else:

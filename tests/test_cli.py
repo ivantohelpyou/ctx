@@ -51,7 +51,8 @@ def test_init_never_overwrites_existing_tracked_config(tmp_path):
 def test_init_preset_writes_shape_specific_config(tmp_path):
     runner = CliRunner()
 
-    result = runner.invoke(main, ["init", "--dir", str(tmp_path), "--preset", "hugo"])
+    result = runner.invoke(main, ["init", "--dir", str(tmp_path), "--preset", "hugo",
+                                  "--shared", "~/notes/shared"])
     assert result.exit_code == 0, result.output
     config = (tmp_path / ".ctx" / "config.yaml").read_text()
     assert "type: hugo" in config
@@ -60,7 +61,9 @@ def test_init_preset_writes_shape_specific_config(tmp_path):
 
     work_dir = tmp_path / "work-rig"
     work_dir.mkdir()
-    runner.invoke(main, ["init", "--dir", str(work_dir), "--preset", "work"])
+    runner.invoke(
+        main, ["init", "--dir", str(work_dir), "--preset", "work", "--shared", "~/notes/shared"]
+    )
     work_config = (work_dir / ".ctx" / "config.yaml").read_text()
     assert "type: work" in work_config
     assert "path: work" in work_config
@@ -128,3 +131,60 @@ def test_index_with_invalid_map_config_exits_cleanly_no_traceback(rig_dir):
     assert "Traceback" not in result.output
     assert result.output.count("Error:") == 1
     assert "summry" in result.output
+
+
+def _init_config(tmp_path, args, env=None):
+    result = CliRunner().invoke(main, ["init", "--dir", str(tmp_path), *args], env=env)
+    assert result.exit_code == 0, result.output
+    return (tmp_path / ".ctx" / "config.yaml").read_text()
+
+
+def test_init_writes_no_shared_corpus_unless_asked(tmp_path):
+    """No default location for shared notes: a stranger's `ctx init` must not
+    point at a directory that only exists on the author's machine."""
+    config = _init_config(tmp_path, [], env={"CTX_SHARED_DIR": None})
+    assert "shared" not in config
+    assert "gt/" not in config
+
+
+def test_init_shared_from_flag_or_env_flag_wins(tmp_path):
+    a, b, c = (tmp_path / n for n in "abc")
+    for d in (a, b, c):
+        d.mkdir()
+    flag_wins = _init_config(a, ["--shared", "~/flag/shared"], env={"CTX_SHARED_DIR": "~/env"})
+    assert 'path: "~/flag/shared"' in flag_wins
+    assert 'path: "~/env/shared"' in _init_config(b, [], env={"CTX_SHARED_DIR": "~/env/shared"})
+    assert 'path: "/srv/notes"' in _init_config(c, ["--shared", "/srv/notes"])
+
+
+def test_init_writes_home_paths_in_tilde_form(tmp_path, monkeypatch):
+    """The shell expands `~` before ctx sees it; the committed config must
+    still say `~/...`, or it only works for this user."""
+    home = tmp_path / "home" / "someone"
+    monkeypatch.setenv("HOME", str(home))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = _init_config(repo, ["--shared", str(home / "notes" / "shared")])
+    assert 'path: "~/notes/shared"' in config
+    assert str(home) not in config
+
+
+def test_init_shared_path_with_yaml_specials_round_trips(tmp_path):
+    """`: ` and `#` in a path must not break the YAML (review finding)."""
+    from ctx_cli.corpus import load_config
+    _init_config(tmp_path, ["--shared", "/srv/my notes: #1"])
+    shared = next(c for c in load_config(tmp_path / ".ctx").corpora if c.name == "shared")
+    assert str(shared.path) == "/srv/my notes: #1"
+
+
+def test_init_mayor_preset_says_shared_flag_is_ignored(tmp_path):
+    args = ["init", "--dir", str(tmp_path), "--preset", "mayor", "--shared", "/x"]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0
+    assert "--shared ignored" in result.output
+    assert "/x" not in (tmp_path / ".ctx" / "config.yaml").read_text()
+
+
+def test_routing_template_names_no_private_location():
+    assert "~/gt" not in ROUTING_TEMPLATE
+    assert " rig" not in ROUTING_TEMPLATE.lower()
