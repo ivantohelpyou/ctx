@@ -1,24 +1,24 @@
 # ctx
 
-**A small command-line tool that answers your coding agent's "where did we decide that?" from
-your project's own notes, in a few hundred tokens instead of a grep sweep.**
-
-When an AI coding agent (Claude Code, Codex, Cursor's agent, …) needs context it doesn't have
-(why the database is split in two, what the rule is for reviews, what was tried last month), it
-usually greps the repo and reads whole files until it finds something. That works, and it is
-expensive: every file it reads stays in the session's context and is paid for again on every
-later turn.
-
-ctx gives the agent one command to ask first:
+**Stop letting your coding agent grep for decisions it already made.** ctx answers "where did
+we decide that?" from your repo's own notes, in one line per answer and a few hundred tokens,
+instead of a grep sweep that reads whole files into context and pays for them on every turn
+after.
 
 ```
 $ ctx get "two databases"
-adr-002 — Two database files, built with SEA — docs/decisions/adr-002-two-databases-sea.md#two-database-files-built-with-sea — Same split as adr-001, plus the durable half's models.py goes through build-with-sea.
+adr-002 — Two database files — docs/decisions/adr-002-two-databases.md#two-database-files — The index is disposable and the logs are durable; one file cannot be both.
 ```
 
-One line per hit: id, title, file and heading, and a one-sentence summary that a person wrote.
-The agent then opens only the file it needs. If nothing in your notes answers the question, ctx
-says so (and logs the question), instead of returning five confident wrong answers.
+Id, title, file and heading, and the one-sentence summary written when the decision was made.
+The agent opens only the file it needs. When nothing in the notes answers the question, ctx says
+so and logs it, instead of returning five confident wrong answers; the logged misses are the
+list of notes to write next.
+
+Built for repos run by coding agents (Claude Code, Codex, Cursor's agent, …), where decisions
+pile up in markdown faster than anyone rereads them, and measured on the author's own fleet of
+fifteen such repos. Not a search engine for prose and not a substitute for reading code: it
+finds the note that explains, then gets out of the way.
 
 - **No embeddings, no vector database, no server, no daemon.** A CLI and two SQLite files.
 - **Your markdown stays the source of truth.** The index is disposable: delete it and rebuild it,
@@ -27,6 +27,16 @@ says so (and logs the question), instead of returning five confident wrong answe
   what it dropped.
 - **Misses are data.** Every question that found nothing is logged: that's the list of notes to
   write next, and the agent that hit the miss is usually the one that writes the note.
+
+## The loop
+
+1. The agent asks ctx before it greps (one line in `CLAUDE.md` / `AGENTS.md`, below).
+2. A hit is one line; the agent opens that file and nothing else.
+3. A miss is logged. Whoever finishes the task (usually the agent) writes the missing note, with
+   its one-sentence summary, as part of "done".
+4. The next agent's question hits.
+
+The notes are the product; ctx is the index that makes them cheap to reach.
 
 ## Does it help? Measured
 
