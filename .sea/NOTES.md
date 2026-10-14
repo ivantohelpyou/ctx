@@ -22,9 +22,7 @@ never touched, only its CLI was invoked):
    miss), ran `sea nave serve --frontend ./frontend --models
    src/ctx_cli/ctxdb/models.py --db sqlite:///.ctx/ctx.db`, and confirmed
    `GET /api/data/queries/` and `/api/data/misses/` return the logged rows.
-5. `~/pilot-station/bin/station adopt <this repo> --owner Ivan --origin
-   studio` — the ship is now in `station ls`, alongside pilot-station and
-   faigin.
+5. The ship was registered with the SEA station by explicit path (id in `.sea/project.json`).
 
 **Registered:** the ship is registered with the SEA station by explicit path (its id is in `.sea/project.json`).
 
