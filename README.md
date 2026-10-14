@@ -311,7 +311,7 @@ its chain (a decision can be superseded by more than one other; a fork is valid 
 ```
 $ ctx history adr-001
 adr-001 — superseded — 2026-09-01 — Two database files, not one
-adr-002 — accepted — 2026-09-05 — Two database files, built with SEA  <- current
+adr-002 — accepted — 2026-09-05 — Two database files, the index disposable  <- current
 ```
 
 ```
