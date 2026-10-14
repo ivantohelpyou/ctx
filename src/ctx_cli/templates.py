@@ -24,6 +24,12 @@ its direct successor).
 Corpora configured for this repo are in `.ctx/config.yaml`. A `shared`
 corpus, if there is one, holds conventions and lessons shared across repos.
 
+If ctx logged a miss for something you then worked out, write the note
+before you finish: a short markdown file in the right corpus with the
+frontmatter `ctx lint` expects (`id`, `title`, a one-sentence `summary`
+written now, while you know; `tags`, `terms`, `date`). The next question
+hits.
+
 Session start: read `.ctx/checkpoints/current.md` if it exists — that's where
 the last session left off. End a session (or before `/clear`) with:
 

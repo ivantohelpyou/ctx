@@ -188,3 +188,9 @@ def test_init_mayor_preset_says_shared_flag_is_ignored(tmp_path):
 def test_routing_template_names_no_private_location():
     assert "~/gt" not in ROUTING_TEMPLATE
     assert " rig" not in ROUTING_TEMPLATE.lower()
+
+
+def test_routing_tells_the_agent_to_write_the_note_after_a_miss():
+    """The one line of method the tool gives away: a miss you then resolve becomes a note."""
+    assert "If ctx logged a miss" in ROUTING_TEMPLATE
+    assert "write the note" in ROUTING_TEMPLATE and "`summary`" in ROUTING_TEMPLATE
