@@ -5,6 +5,7 @@ import hashlib
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -17,6 +18,7 @@ from ctx_cli.indexer import build_index
 from ctx_cli.mapview import (
     DEFAULT_EXAMPLES,
     GREP_TOP_FILES,
+    doc_view,
     examples,
     grep_baseline,
     history_log,
@@ -437,6 +439,35 @@ def test_bad_numbers_in_the_query_string_fall_back_to_defaults(served):
     _, _, body = _fetch(served + "/api/query?q=budget&budget=abc&limit=")
     assert json.loads(body)["rigs"][0]["kept"]
 
+
+
+def test_the_doc_endpoint_shows_a_returned_documents_front_matter(served):
+    _, _, body = _fetch(served + "/api/query?q=budget")
+    hit = json.loads(body)["hits"][0]
+    assert hit["text"].strip()  # the line ctx printed for it, for the panel
+    _, _, body = _fetch(served + "/api/doc?key=" + urllib.parse.quote(hit["key"]))
+    doc = json.loads(body)
+    assert f"id: {hit['id']}" in doc["frontmatter"]
+    assert not doc["frontmatter"].startswith("---")
+    assert 0 < doc["frontmatter_tokens"] <= doc["file_tokens"]
+
+
+@pytest.mark.parametrize("key", ["", "id:adr-001", "/etc/hostname", "../../etc/hostname"])
+def test_the_doc_endpoint_serves_only_corpus_files(served, key):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _fetch(served + "/api/doc?key=" + urllib.parse.quote(key))
+    assert e.value.code == 404
+
+
+def test_a_file_outside_every_corpus_is_refused_even_inside_the_rig(rig_dir, built):
+    assert doc_view([built], str((rig_dir / ".ctx" / "config.yaml").resolve())) is None
+
+
+def test_a_corpus_file_without_front_matter_says_so(rig_dir, built):
+    bare = rig_dir / "docs" / "shared" / "bare.md"
+    bare.write_text("# just a heading\n\nbody text\n")
+    doc = doc_view([built], str(bare.resolve()))
+    assert doc["frontmatter"] is None and doc["frontmatter_tokens"] == 0
 
 # --- the command ----------------------------------------------------------
 

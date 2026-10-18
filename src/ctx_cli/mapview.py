@@ -7,6 +7,7 @@ stdlib `http.server`, bound to 127.0.0.1:
     /api/query    one query, run through the same `search()` + `apply_budget()`
                   `ctx get` uses, with ctx's tokens beside a keyword grep's
     /api/history  the logged queries and misses from each rig's ctx.db
+    /api/doc      one returned document's front matter: what ctx indexed
 
 Nothing here writes. The index is opened the way `search()` opens it
 (`mode=ro&immutable=1`), `ctx.db` with `mode=ro` (never through
@@ -40,6 +41,7 @@ from .corpus import (
     iter_corpus_files,
     load_config,
 )
+from .frontmatter import FRONTMATTER_DELIM
 from .indexer import index_is_stale
 from .mappage import PAGE
 from .query import (
@@ -383,7 +385,7 @@ def query_all(rigs: list[RigConfig], query: str, **opts) -> dict:
                         seen[c["key"]]["rigs"].append(r["label"])
                     continue
                 entry = {"kind": kind, "key": c["key"], "id": c["id"], "title": c["title"],
-                         "rigs": [r["label"]]}
+                         "rigs": [r["label"]], "text": c["text"]}
                 seen[c["key"]] = entry
                 hits.append(entry)
                 lines.append(c["text"])
@@ -406,6 +408,44 @@ def query_all(rigs: list[RigConfig], query: str, **opts) -> dict:
         "grep_unreadable": grep["unreadable"],
         "miss": all(r["miss"] for r in results),
     }
+
+
+def _frontmatter_block(text: str) -> str | None:
+    """The raw lines between the opening and closing `---`, as written (the
+    page shows the file, not ctx's parse of it); None if there is no block."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != FRONTMATTER_DELIM:
+        return None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == FRONTMATTER_DELIM:
+            return "\n".join(lines[1:i])
+    return None
+
+
+def doc_view(rigs: list[RigConfig], key: str) -> dict | None:
+    """The front matter of one corpus file, for the page's document panel.
+    `key` is a hit's key (its resolved path). Only a file some rig's corpus
+    actually lists is served; any other path is None, so the endpoint cannot
+    read the rest of the disk."""
+    if not key or key.startswith("id:"):
+        return None
+    for config in rigs:
+        for spec in config.corpora:
+            for path in iter_corpus_files(spec):
+                if _real(path) != key:
+                    continue
+                text = _read(key)
+                if text is None:
+                    return None
+                block = _frontmatter_block(text)
+                return {
+                    "key": key,
+                    "path": key.replace(str(Path.home()), "~", 1),
+                    "frontmatter": block,
+                    "file_tokens": tokens(text),
+                    "frontmatter_tokens": tokens(block or ""),
+                }
+    return None
 
 
 def history_log(rigs: list[RigConfig]) -> dict:
@@ -508,6 +548,12 @@ def make_handler(rigs: list[RigConfig]):
                 self._json({"examples": examples(rigs)})
             elif url.path == "/api/history":
                 self._json(history_log(rigs))
+            elif url.path == "/api/doc":
+                doc = doc_view(rigs, params.get("key", [""])[0])
+                if doc is None:
+                    self._json({"error": "not a document in these rigs"}, 404)
+                else:
+                    self._json(doc)
             elif url.path == "/api/query":
                 q = (params.get("q", [""])[0]).strip()
                 if not q:
