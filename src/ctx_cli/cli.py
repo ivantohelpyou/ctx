@@ -40,7 +40,7 @@ from .indexer import DuplicateIdError, build_index, ensure_fresh_index
 from .lint import decisions_structural_errors
 from .lint import lint as run_lint
 from .mapview import make_server, open_rigs
-from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, render_weak, search
+from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, render_weak, retrieve
 from .templates import ROUTING_TEMPLATE
 
 # Errors that mean "the index/corpus is broken in a known way" — reported as a
@@ -240,7 +240,7 @@ def get_cmd(
     work_corpora = [c.name for c in config.corpora if c.type == "work"]
     try:
         ensure_fresh_index(config)
-        hits = search(
+        hits, demoted, weak = retrieve(
             config.index_db_path,
             query,
             corpus=corpus,
@@ -249,23 +249,11 @@ def get_cmd(
             work_corpora=work_corpora,
             loose=loose,
         )
-        weak = []
-        if not hits and not loose:
-            # The floor left nothing: show the best one-word matches as
-            # labelled leads. Same filters (corpus, history), floor off.
-            weak = search(
-                config.index_db_path,
-                query,
-                corpus=corpus,
-                history=history,
-                decisions_corpora=decisions_corpora,
-                work_corpora=work_corpora,
-                loose=True,
-            )
     except INDEX_ERRORS as e:
         raise click.ClickException(str(e)) from e
 
     kept, dropped = apply_budget(hits, budget, limit=limit)
+    dropped += demoted
     click.echo(render(kept, dropped), nl=False)
     click.echo(render_weak(weak), nl=False)
     if any(h.cycle for h in kept):

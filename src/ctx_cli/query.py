@@ -11,7 +11,9 @@ Output contract (must be deterministic — same query + same index => same bytes
 
 or, when the relevance floor leaves nothing:
 
-    weak: id — title — path#slug (at most WEAK_SHOWN lines; logged as a miss)
+    weak: id — title — path#slug [(proposed)]  (at most WEAK_SHOWN lines; logged as a miss)
+
+A `dropped:` line may also end ` (proposed)`: see below.
 
 A hit must match at least `min_terms_required()` of the query's content terms
 (stopwords removed) or it is not a result at all — it is neither kept nor
@@ -19,6 +21,16 @@ dropped, so a query whose only matches are one-word coincidences returns
 nothing and is logged as a miss (hq-mb81). `loose=True` restores plain OR.
 When the floor leaves nothing, the best one-word matches are shown as `weak:`
 lines — a lead, labelled as such, never an answer (`render_weak`).
+
+A `proposed` decision is current (hq-7zfw): it ranks alongside accepted ones.
+But when ONLY proposed decisions clear the floor, they come back as `weak:`
+leads marked `(proposed)`, not as hits: measured over 90 real queries, a
+proposed position rescuing a would-be miss was as often noise as an answer,
+while a proposed position outranking an accepted one was usually the better
+answer. And a proposed decision ranked BELOW any other hit is not a hit either:
+it is a `dropped: ... (proposed)` line, because in that position it was almost
+always noise costing ~400 tokens of summary. `retrieve()` is the rule, for
+every caller.
 
 Bodies are never read at query time; only the index table and FTS5 built from
 frontmatter are consulted.
@@ -50,6 +62,10 @@ DROPPED_SHOWN = 5
 # categories collections") can have good documents that each match one word;
 # a bare miss would hide them, five unlabelled hits would be the old noise.
 WEAK_SHOWN = 3
+# Decision statuses that count as current when no `--history` is given. A
+# missing status counts too; the supersession graph still has the last word.
+CURRENT_STATUSES = ("accepted", "proposed")
+PROPOSED = "proposed"
 
 # Words that say nothing about which document is meant. OR-ing them in let
 # almost any document match ("heads in beds" matched on "in"); counting them
@@ -165,8 +181,12 @@ def format_superseded_by(hit: Hit) -> str | None:
     return f"  superseded-by: {parts}"
 
 
+def _mark(hit: Hit) -> str:
+    return f" ({PROPOSED})" if hit.status == PROPOSED else ""
+
+
 def format_weak(hit: Hit) -> str:
-    return f"weak: {hit.id} — {hit.title} — {hit.path}#{_slugify(hit.title)}"
+    return f"weak: {hit.id} — {hit.title} — {hit.path}#{_slugify(hit.title)}{_mark(hit)}"
 
 
 def render_weak(weak: list[Hit]) -> str:
@@ -177,7 +197,7 @@ def render_weak(weak: list[Hit]) -> str:
 
 
 def format_dropped(hit: Hit) -> str:
-    return f"dropped: {hit.id} — {hit.title}"
+    return f"dropped: {hit.id} — {hit.title}{_mark(hit)}"
 
 
 def _rendered_char_len(hit: Hit) -> int:
@@ -218,6 +238,8 @@ def search(
     loose: bool = False,
 ) -> list[Hit]:
     """Run the FTS5 query, status-filtered before ranking, ranked by BM25.
+    Without `history`, a decision is current if its status is one of
+    CURRENT_STATUSES (or missing) and nothing supersedes it.
 
     `decisions_corpora` is the list of corpus NAMES configured with
     `type: decisions` (the caller reads this from `RigConfig`, not this
@@ -266,16 +288,18 @@ def search(
             # corpus — an explainer or shared doc is kept regardless of its
             # own status/graph membership, which is the "or" branch below.
             placeholders = ", ".join(["?"] * len(decisions_corpora))
+            current = ", ".join(["?"] * len(CURRENT_STATUSES))
             sql += (
                 f" AND (documents.corpus NOT IN ({placeholders})"
                 " OR ("
-                "   (documents.status IS NULL OR documents.status = 'accepted')"
+                f"   (documents.status IS NULL OR documents.status IN ({current}))"
                 "   AND NOT EXISTS ("
                 "     SELECT 1 FROM supersessions s WHERE s.to_id = documents.id"
                 "   )"
                 " ))"
             )
             params.extend(decisions_corpora)
+            params.extend(CURRENT_STATUSES)
         if not history and work_corpora:
             # Same shape as the decisions clause above, minus the graph: a
             # work-corpus doc has no supersession chain, only a status a
@@ -317,6 +341,42 @@ def search(
     finally:
         conn.close()
     return hits
+
+
+def retrieve(
+    index_db_path: Path,
+    query: str,
+    corpus: str | None = None,
+    history: bool = False,
+    decisions_corpora: list[str] | None = None,
+    work_corpora: list[str] | None = None,
+    loose: bool = False,
+) -> tuple[list[Hit], list[Hit], list[Hit]]:
+    """`(hits, demoted, weak)` for one query: the body of `ctx get`, shared by
+    every caller so the CLI and `ctx map` cannot drift apart. `hits` go to
+    `apply_budget()`; `demoted` are appended to its dropped list.
+
+    Hits are ranked with proposed decisions current. If every hit is a
+    proposed decision — so with accepted ones alone the floor would have left
+    nothing — they become the `weak:` leads instead. A proposed decision ranked
+    below the first other hit is demoted to a `dropped:` line (see the module
+    docstring). If nothing clears the floor at all, the leads are the best
+    one-word matches."""
+    kw = dict(corpus=corpus, history=history, decisions_corpora=decisions_corpora,
+              work_corpora=work_corpora)
+    hits = search(index_db_path, query, loose=loose, **kw)
+    if loose or history:  # --history and --loose ask for everything, as hits
+        return hits, [], ([] if hits or loose else search(index_db_path, query, loose=True, **kw))
+    if not hits:
+        return [], [], search(index_db_path, query, loose=True, **kw)
+    decisions = set(decisions_corpora or [])
+    proposed = [h.corpus in decisions and h.status == PROPOSED for h in hits]
+    if all(proposed):
+        return [], [], hits
+    first = proposed.index(False)
+    tail = list(zip(hits[first + 1 :], proposed[first + 1 :]))
+    keep = hits[: first + 1] + [h for h, p in tail if not p]
+    return keep, [h for h, p in tail if p], []
 
 
 def apply_budget(
