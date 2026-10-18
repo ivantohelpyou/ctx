@@ -10,12 +10,14 @@ ctx get "<query>" [...]         search, budgeted, deterministic output
 ctx history <id>                a decision's supersession chain, oldest to newest
 ctx lint                        frontmatter + supersession graph integrity
 ctx checkpoint "<note>"         append session state to checkpoints/current.md
+ctx map [--dir PATH ...]        read-only browser map of the index and one query's reads
 """
 
 from __future__ import annotations
 
 import os
 import sqlite3
+import webbrowser
 from pathlib import Path
 
 import click
@@ -37,6 +39,7 @@ from .history import history_view
 from .indexer import DuplicateIdError, build_index, ensure_fresh_index
 from .lint import decisions_structural_errors
 from .lint import lint as run_lint
+from .mapview import make_server, open_rigs
 from .query import DEFAULT_BUDGET, DEFAULT_LIMIT, apply_budget, render, render_weak, search
 from .templates import ROUTING_TEMPLATE
 
@@ -349,6 +352,44 @@ def checkpoint_cmd(note: str, start_dir: Path | None):
         raise click.ClickException(str(e)) from e
     path = checkpoint_mod.append_checkpoint(config, note)
     click.echo(f"appended to {path}")
+
+
+@main.command("map")
+@click.option(
+    "--dir",
+    "dirs",
+    type=click.Path(path_type=Path),
+    multiple=True,
+    help="A rig (or any directory under one); repeat for several rigs on one map. "
+    "Default: the rig containing cwd.",
+)
+@click.option(
+    "--port", default=8765, show_default=True, help="Port on 127.0.0.1; 0 picks a free one."
+)
+@click.option("--open", "open_browser", is_flag=True, default=False, help="Open the page.")
+def map_cmd(dirs: tuple[Path, ...], port: int, open_browser: bool):
+    """Serve a read-only browser map of every rig's index: each document a dot,
+    supersession chains as lines, a query box that runs the same search as
+    `ctx get` and shows its tokens beside a keyword grep's, and the logged
+    queries and misses. Writes nothing: no rebuild, no query log."""
+    try:
+        rigs = open_rigs(list(dirs) or [Path.cwd()])
+    except (CtxNotFoundError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    try:
+        server = make_server(rigs, port)
+    except OSError as e:
+        raise click.ClickException(f"cannot listen on 127.0.0.1:{port}: {e}") from e
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    click.echo(f"ctx map: {len(rigs)} rig(s) at {url}  (ctrl-c to stop)")
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

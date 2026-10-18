@@ -144,6 +144,7 @@ ctx checkpoint "indexed explainers; next: point the docs corpus at the Hugo site
 | `ctx history <id>` | A decision's supersession chain, oldest to newest |
 | `ctx lint` | Check frontmatter, decision links, explainer staleness and coverage |
 | `ctx checkpoint "<note>"` | Append a session note to `.ctx/checkpoints/current.md` |
+| `ctx map [--dir PATH ...] [--port N] [--open]` | Read-only browser map of one or more rigs: every document a dot, supersession chains as lines, a query box that runs the same search as `ctx get` and shows its tokens beside a keyword grep's, and the logged queries and misses |
 
 `ctx --help` lists every flag.
 
