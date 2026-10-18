@@ -74,6 +74,18 @@ body.q .link { opacity: .25; }
 .ring { fill: none; stroke-width: 3; }
 .ring.kept { stroke: var(--hit); } .ring.dropped { stroke: var(--drop); stroke-dasharray: 3 2; }
 .ring.weak { stroke: var(--weak); stroke-dasharray: 2 2; }
+#examples { position: fixed; top: 112px; left: 16px; width: 760px; background: var(--panel);
+  border: 2px solid var(--current); border-radius: 10px; padding: 8px 14px; z-index: 5; display: none;
+  box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+#examples.open { display: block; }
+#examples h2 { margin: 0 0 4px; font-size: 20px; color: var(--muted); font-weight: 600; }
+#examples button { display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line);
+  border-radius: 0; padding: 7px 4px; }
+#examples button:hover, #examples button:focus { background: var(--bg); outline: none; }
+#examples .eq { font-size: 24px; font-weight: 600; }
+#examples .en { display: block; color: var(--muted); font-size: 18px; }
+#error { color: var(--miss); font-size: 20px; font-weight: 600; }
+#perrig { color: var(--muted); font-size: 15px; }
 .legend { color: var(--muted); font-size: 16px; }
 .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 6px; margin: 0 4px 0 12px;
   vertical-align: -1px; }
@@ -84,12 +96,14 @@ body.q .link { opacity: .25; }
   <h1>ctx map</h1>
   <div class="sub" id="sub">loading…</div>
   <div class="legend"><i style="background:var(--current)"></i>current<i style="background:var(--old)"></i>superseded<i style="background:var(--hit)"></i>returned<i style="background:var(--drop)"></i>dropped<i style="background:var(--weak)"></i>weak lead</div>
+  <button id="help" type="button" title="example queries (?)">?</button>
   <button id="theme" type="button" title="light / dark (t)">light / dark</button>
 </header>
 <form id="qform">
   <input type="text" id="q" placeholder="ask the map: where did we decide…" autocomplete="off" autofocus>
   <button type="submit">ask</button>
 </form>
+<div id="examples" role="dialog" aria-label="example queries"></div>
 <main>
   <div id="mapwrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"></svg></div>
   <div id="side">
@@ -98,7 +112,9 @@ body.q .link { opacity: .25; }
       <div class="num" id="grepnum"><b>–</b><span id="grepcap">tokens a grep reads</span></div>
     </div>
     <div id="verdict"></div>
+    <div id="error"></div>
     <div id="hits"></div>
+    <div id="perrig"></div>
   </div>
 </main>
 <section id="strip">
@@ -222,36 +238,80 @@ function showResult(res) {
     mark(r.label, r.weak, "weak");
     mark(r.label, r.kept, "kept");
   });
+  $("error").textContent = "";
   $("ctxnum").firstChild.textContent = fmt(res.ctx_tokens);
   $("grepnum").firstChild.textContent = fmt(res.grep_tokens);
   $("grepcap").textContent = "tokens a grep reads · " + fmt(res.grep_files) + " files match";
   const v = $("verdict");
-  const kept = res.rigs.reduce((s, r) => s + r.kept.length, 0);
+  const kept = res.hits.filter((h) => h.kind === "kept").length;
   v.className = res.miss ? "miss" : "";
   v.textContent = res.miss ? "MISS — ctx has nothing for this; write the note"
     : kept + " returned" + (res.ctx_tokens && res.grep_tokens ? " · " +
       Math.max(1, Math.round(res.grep_tokens / res.ctx_tokens)) + "× less than grep" : "");
   const box = $("hits"); box.replaceChildren();
-  const add = (cls, tag, rig, h) => {
-    const row = document.createElement("div"); row.className = "hit " + cls;
+  const where = (rigs) => rigs.map(shortName).join(" + ");
+  const tags = { kept: ["kept", "hit"], dropped: ["dropped", "dropped"], weak: ["weak", "weak lead"] };
+  res.hits.forEach((h) => {
+    const row = document.createElement("div"); row.className = "hit " + tags[h.kind][0];
     const t = document.createElement("div"); t.className = "t";
-    const g = document.createElement("span"); g.className = "tag"; g.textContent = tag;
-    t.append(g, h.title);
+    const g = document.createElement("span"); g.className = "tag"; g.textContent = tags[h.kind][1];
+    t.append(g, h.title || h.id);
     const id = document.createElement("div"); id.className = "id";
-    id.textContent = h.id + " · " + shortName(rig);
+    id.textContent = h.id + " · " + where(h.rigs);
     row.append(t, id); box.appendChild(row);
-  };
-  res.rigs.forEach((r) => r.kept.forEach((h) => add("kept", "hit", r.label, h)));
-  res.rigs.forEach((r) => r.dropped.slice(0, 5).forEach((h) => add("dropped", "dropped", r.label, h)));
-  res.rigs.forEach((r) => r.weak.forEach((h) => add("weak", "weak lead", r.label, h)));
+  });
+  const per = res.rigs.map((r) => shortName(r.label) + ": ctx " + fmt(r.ctx_tokens) + ", grep " +
+    fmt(r.grep.files) + " files / " + fmt(r.grep.tokens)).join("  ·  ");
+  $("perrig").textContent = "per rig (shared docs count in each) — " + per +
+    (res.grep_unreadable ? "  ·  " + res.grep_unreadable + " unreadable file(s) skipped" : "");
+}
+
+function showError(msg) {
+  clearMarks();
+  $("verdict").textContent = ""; $("hits").replaceChildren(); $("perrig").textContent = "";
+  $("ctxnum").firstChild.textContent = "–"; $("grepnum").firstChild.textContent = "–";
+  $("error").textContent = "Could not run that query: " + msg;
 }
 
 async function ask(q) {
   if (!q.trim()) return;
-  const res = await (await fetch("/api/query?q=" + encodeURIComponent(q))).json();
-  if (res.error) { $("verdict").textContent = res.error; return; }
-  showResult(res);
+  try {
+    const resp = await fetch("/api/query?q=" + encodeURIComponent(q));
+    const res = await resp.json();
+    if (!resp.ok || res.error) { showError(res.error || ("HTTP " + resp.status)); return; }
+    showResult(res);
+  } catch (e) {
+    showError(String(e));
+  }
 }
+
+/* the "?" panel: curated queries, one click to run, nothing typed on stage */
+async function loadExamples() {
+  let list = [];
+  try { list = (await (await fetch("/api/examples")).json()).examples || []; } catch (e) {}
+  const box = $("examples");
+  const h = document.createElement("h2"); h.textContent = "Try one (click to run)";
+  box.replaceChildren(h);
+  list.forEach((ex) => {
+    const b = document.createElement("button"); b.type = "button";
+    const q = document.createElement("span"); q.className = "eq"; q.textContent = ex.q;
+    const n = document.createElement("span"); n.className = "en"; n.textContent = ex.note;
+    b.append(q, n);
+    b.onclick = () => { closeExamples(); $("q").value = ex.q; ask(ex.q); };
+    box.appendChild(b);
+  });
+}
+function closeExamples() { $("examples").classList.remove("open"); $("q").focus(); }
+function toggleExamples() {
+  const box = $("examples");
+  if (box.classList.toggle("open")) { const b = box.querySelector("button"); if (b) b.focus(); }
+}
+$("help").onclick = toggleExamples;
+document.addEventListener("keydown", (e) => {
+  const inBox = document.activeElement === $("q");
+  if (e.key === "?" && (!inBox || !$("q").value)) { e.preventDefault(); toggleExamples(); }
+  else if (e.key === "Escape") closeExamples();
+});
 $("qform").onsubmit = (e) => { e.preventDefault(); ask($("q").value); };
 
 /* the logged-history strip: queries per day, misses in red on top */
@@ -283,7 +343,7 @@ function drawStrip() {
 
 (async function () {
   [MAP, HIST] = await Promise.all([fetch("/api/map").then((r) => r.json()), fetch("/api/history").then((r) => r.json())]);
-  drawMap(); drawStrip();
+  drawMap(); drawStrip(); loadExamples();
   const p = new URLSearchParams(location.search).get("q");
   if (p) { $("q").value = p; ask(p); }
 })();

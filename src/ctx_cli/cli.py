@@ -364,7 +364,10 @@ def checkpoint_cmd(note: str, start_dir: Path | None):
     "Default: the rig containing cwd.",
 )
 @click.option(
-    "--port", default=8765, show_default=True, help="Port on 127.0.0.1; 0 picks a free one."
+    "--port",
+    default=8765,
+    show_default=True,
+    help="Port on 127.0.0.1; 0, or a busy port, picks a free one.",
 )
 @click.option("--open", "open_browser", is_flag=True, default=False, help="Open the page.")
 def map_cmd(dirs: tuple[Path, ...], port: int, open_browser: bool):
@@ -380,7 +383,10 @@ def map_cmd(dirs: tuple[Path, ...], port: int, open_browser: bool):
         server = make_server(rigs, port)
     except OSError as e:
         raise click.ClickException(f"cannot listen on 127.0.0.1:{port}: {e}") from e
-    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    bound = server.server_address[1]
+    if port and bound != port:
+        click.echo(f"ctx map: port {port} is busy, using {bound} instead")
+    url = f"http://127.0.0.1:{bound}/"
     click.echo(f"ctx map: {len(rigs)} rig(s) at {url}  (ctrl-c to stop)")
     if open_browser:
         webbrowser.open(url)

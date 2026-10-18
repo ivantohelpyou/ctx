@@ -15,7 +15,9 @@ from ctx_cli.corpus import load_config
 from ctx_cli.ctxdb.db import log_query
 from ctx_cli.indexer import build_index
 from ctx_cli.mapview import (
+    DEFAULT_EXAMPLES,
     GREP_TOP_FILES,
+    examples,
     grep_baseline,
     history_log,
     make_server,
@@ -153,7 +155,37 @@ def test_grep_is_case_insensitive_and_scoped_to_the_corpus_asked_for(rig_dir, bu
     assert run_query(built, "WORKTREE")["grep"]["files"] == everything["files"]
 
 
-def test_query_all_totals_every_rig(rig_dir, built, tmp_path):
+def _second_rig(tmp_path, name, shared_dir):
+    """A rig whose only corpus is `shared_dir` (a path another rig also lists)."""
+    rig = tmp_path / name
+    (rig / ".ctx").mkdir(parents=True)
+    (rig / ".ctx" / "config.yaml").write_text(
+        f"corpora:\n  shared:\n    type: shared\n    path: {shared_dir}\n"
+    )
+    cfg = load_config(rig / ".ctx")
+    build_index(cfg)
+    return cfg
+
+
+def test_two_rigs_sharing_a_corpus_give_one_rigs_headline(rig_dir, built, tmp_path):
+    shared = rig_dir / "docs" / "shared"
+    twin = _second_rig(tmp_path, "twin", shared)
+    alone = _second_rig(tmp_path, "alone", shared)
+
+    one = query_all([alone], "worktree checkout")
+    both = query_all([alone, twin], "worktree checkout")
+    assert one["hits"] and one["grep_files"] >= 1
+    assert both["ctx_tokens"] == one["ctx_tokens"]
+    assert both["grep_files"] == one["grep_files"]
+    assert both["grep_tokens"] == one["grep_tokens"]
+    # one document, listed once, credited to both rigs
+    assert [h["id"] for h in both["hits"]] == [h["id"] for h in one["hits"]]
+    assert all(len(h["rigs"]) == 2 for h in both["hits"])
+    # the per-rig small print is still per rig
+    assert [r["ctx_tokens"] for r in both["rigs"]] == [one["ctx_tokens"]] * 2
+
+
+def test_rigs_with_different_corpora_add_up(rig_dir, built, tmp_path):
     other = tmp_path / "other"
     (other / ".ctx").mkdir(parents=True)
     (other / ".ctx" / "config.yaml").write_text(
@@ -168,10 +200,73 @@ def test_query_all_totals_every_rig(rig_dir, built, tmp_path):
 
     both = query_all([built, other_cfg], "budget")
     parts = [run_query(built, "budget"), run_query(other_cfg, "budget")]
-    assert both["ctx_tokens"] == sum(p["ctx_tokens"] for p in parts)
+    assert both["ctx_tokens"] == tokens("".join(c["text"] for p in parts for c in p["chunks"]))
     assert both["grep_files"] == sum(p["grep"]["files"] for p in parts)
-    assert both["grep_tokens"] == sum(p["grep"]["tokens"] for p in parts)
     assert not both["miss"]
+
+
+def test_union_sweep_counts_each_file_once(tmp_path):
+    specs = _corpus(tmp_path, {"a.md": "alpha text", "b.md": "alpha beta"})
+    via_symlink = tmp_path / "alias"
+    via_symlink.symlink_to(tmp_path / "corpus")
+    from ctx_cli.corpus import CorpusSpec
+
+    specs += [specs[0], CorpusSpec(name="again", type="shared", path=via_symlink)]
+    r = grep_baseline("alpha beta", specs)
+    assert r["files"] == 2
+    assert r == grep_baseline("alpha beta", specs[:1])
+
+
+def test_an_unreadable_corpus_file_is_skipped_not_fatal(rig_dir, built):
+    (rig_dir / "docs" / "shared" / "dangling.md").symlink_to(rig_dir / "no-such-file.md")
+    r = run_query(built, "worktree")
+    assert r["grep"]["unreadable"] == 1
+    assert r["grep"]["files"] >= 1
+    out = query_all([built], "worktree")
+    assert out["grep_unreadable"] == 1 and out["grep_files"] == r["grep"]["files"]
+
+
+def test_a_server_error_answers_json_instead_of_hanging(built, served, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr("ctx_cli.mapview.snapshot", boom)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _fetch(served + "/api/map")
+    assert e.value.code == 500
+    assert "disk gone" in json.loads(e.value.read())["error"]
+
+
+def test_a_busy_port_falls_back_to_a_free_one(built):
+    import socket
+
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen()
+    busy = blocker.getsockname()[1]
+    server = make_server([built], busy)
+    try:
+        assert server.server_address[1] not in (0, busy)
+    finally:
+        server.server_close()
+        blocker.close()
+
+
+def test_examples_default_and_config_override(built, rig_dir):
+    assert examples([built]) == DEFAULT_EXAMPLES
+    assert [e["q"] for e in DEFAULT_EXAMPLES][-1] == "launch TUI rewrite"
+    cfg = rig_dir / ".ctx" / "config.yaml"
+    cfg.write_text(
+        cfg.read_text()
+        + "map:\n  examples:\n    - {q: 'my query', note: 'mine'}\n    - {note: 'no q'}\n    - 7\n"
+    )
+    assert examples([load_config(rig_dir / ".ctx")]) == [{"q": "my query", "note": "mine"}]
+    assert load_config(rig_dir / ".ctx").corpora  # the map: key does not upset load_config
+
+
+def test_examples_endpoint(served):
+    _, _, body = _fetch(served + "/api/examples")
+    assert json.loads(body)["examples"] == DEFAULT_EXAMPLES
 
 
 def test_a_rig_without_an_index_is_reported_not_fatal(config):
