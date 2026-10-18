@@ -154,7 +154,7 @@ def snapshot(rigs: list[RigConfig]) -> dict:
                 ]
             finally:
                 conn.close()
-        except sqlite3.Error as e:
+        except (sqlite3.Error, *PATH_ERRORS) as e:
             rig["error"] = str(e)
             continue
         superseded = {old for _, old in links}
@@ -195,12 +195,25 @@ def _corpus_dirs(config: RigConfig, corpus: str | None) -> list[CorpusSpec]:
     return specs
 
 
+# What a path operation can raise on a broken tree: OSError for a missing or
+# unreadable file, RuntimeError for a symlink loop (`Path.resolve()` on 3.12).
+PATH_ERRORS = (OSError, RuntimeError)
+
+
+def _real(path: Path) -> str | None:
+    """`path` resolved, or None if it cannot be (a symlink loop)."""
+    try:
+        return str(path.resolve())
+    except PATH_ERRORS:
+        return None
+
+
 def _read(path: Path | str) -> str | None:
     """A corpus file's text, or None if it cannot be read (a broken symlink, a
     permission error): one bad file must not take the whole query down."""
     try:
         return Path(path).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+    except PATH_ERRORS:
         return None
 
 
@@ -225,11 +238,12 @@ def grep_baseline(query: str, specs: list[CorpusSpec]) -> dict:
     seen: set[str] = set()
     for spec in specs:
         for path in iter_corpus_files(spec):
-            real = str(path.resolve())
-            if real in seen:
-                continue
-            seen.add(real)
-            raw = _read(real)
+            real = _real(path)
+            if real is not None:
+                if real in seen:
+                    continue
+                seen.add(real)
+            raw = _read(real or path)
             if raw is None:
                 unreadable += 1
                 continue
@@ -254,7 +268,8 @@ def _doc_key(config: RigConfig, h: Hit) -> str:
     stores it rig-relative or absolute), else its id."""
     if not h.path:
         return "id:" + h.id
-    return str((config.rig_root / h.path).resolve())
+    path = config.rig_root / h.path
+    return _real(path) or str(path)
 
 
 def _hit_json(h: Hit) -> dict:
@@ -269,6 +284,7 @@ def run_query(
     corpus: str | None = None,
     history: bool = False,
     loose: bool = False,
+    sweep: bool = True,
 ) -> dict:
     """The body of `ctx get`, minus the index rebuild and the query log: the
     same `search()` calls, the same floor and `weak:` fallback, the same
@@ -291,7 +307,8 @@ def run_query(
     weak = run(True) if not hits and not loose else []
     kept, dropped = apply_budget(hits, budget, limit=limit)
     text = render(kept, dropped) + render_weak(weak)
-    grep = grep_baseline(query, _corpus_dirs(config, corpus))
+    # `sweep=False`: the caller (query_all) does one union sweep itself.
+    grep = grep_baseline(query, _corpus_dirs(config, corpus)) if sweep else None
 
     def chunk(kind: str, h: Hit, text: str) -> dict:
         return {"kind": kind, "key": _doc_key(config, h), "id": h.id, "title": h.title,
@@ -342,8 +359,8 @@ def query_all(rigs: list[RigConfig], query: str, **opts) -> dict:
             results.append(_failed(config, "no index.db"))
             continue
         try:
-            results.append(run_query(config, query, **opts))
-        except (sqlite3.Error, OSError) as e:
+            results.append(run_query(config, query, sweep=False, **opts))
+        except (sqlite3.Error, *PATH_ERRORS) as e:
             results.append(_failed(config, str(e)))
     # Headline numbers are over the UNION of the rigs, never a sum of them: a
     # document several rigs return is one document, and a directory several
@@ -366,9 +383,14 @@ def query_all(rigs: list[RigConfig], query: str, **opts) -> dict:
                 seen[c["key"]] = entry
                 hits.append(entry)
                 lines.append(c["text"])
-    for r in results:  # "+N more" lines carry no document
-        lines.extend(c["text"] for c in r["chunks"] if c["kind"] == "more")
-    specs = [spec for config in rigs for spec in _corpus_dirs(config, opts.get("corpus"))]
+    for r in results:  # "+N more" lines carry no document; same line, said once
+        for c in r["chunks"]:
+            if c["kind"] == "more" and c["text"] not in lines:
+                lines.append(c["text"])
+    # Only rigs ctx actually searched: grep over a corpus ctx never saw would
+    # inflate the ratio.
+    searched = [c for c, r in zip(rigs, results) if "error" not in r]
+    specs = [spec for config in searched for spec in _corpus_dirs(config, opts.get("corpus"))]
     grep = grep_baseline(query, specs)
     return {
         "query": query,
@@ -405,7 +427,7 @@ def history_log(rigs: list[RigConfig]) -> dict:
                     misses.append({"rig": label, **dict(r)})
             finally:
                 conn.close()
-        except sqlite3.Error:
+        except (sqlite3.Error, *PATH_ERRORS):
             continue
     queries.sort(key=lambda r: r["ts"])
     misses.sort(key=lambda r: r["ts"])

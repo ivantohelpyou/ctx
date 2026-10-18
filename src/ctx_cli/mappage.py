@@ -260,8 +260,7 @@ function showResult(res) {
     id.textContent = h.id + " · " + where(h.rigs);
     row.append(t, id); box.appendChild(row);
   });
-  const per = res.rigs.map((r) => shortName(r.label) + ": ctx " + fmt(r.ctx_tokens) + ", grep " +
-    fmt(r.grep.files) + " files / " + fmt(r.grep.tokens)).join("  ·  ");
+  const per = res.rigs.map((r) => shortName(r.label) + ": ctx " + fmt(r.ctx_tokens) + " tokens").join("  ·  ");
   $("perrig").textContent = "per rig (shared docs count in each) — " + per +
     (res.grep_unreadable ? "  ·  " + res.grep_unreadable + " unreadable file(s) skipped" : "");
 }

@@ -169,6 +169,8 @@ def _second_rig(tmp_path, name, shared_dir):
 
 def test_two_rigs_sharing_a_corpus_give_one_rigs_headline(rig_dir, built, tmp_path):
     shared = rig_dir / "docs" / "shared"
+    for i in range(12):  # enough hits that a tight budget drops more than it shows
+        _write(rig_dir, f"w{i}", f"w-{i}", f"worktree note {i}", f"worktree checkout database {i}")
     twin = _second_rig(tmp_path, "twin", shared)
     alone = _second_rig(tmp_path, "alone", shared)
 
@@ -181,6 +183,10 @@ def test_two_rigs_sharing_a_corpus_give_one_rigs_headline(rig_dir, built, tmp_pa
     # one document, listed once, credited to both rigs
     assert [h["id"] for h in both["hits"]] == [h["id"] for h in one["hits"]]
     assert all(len(h["rigs"]) == 2 for h in both["hits"])
+    # a tight budget leaves "dropped: +N more" lines: said once, not once per rig
+    tight_one = query_all([alone], "worktree checkout database budget", budget=300)
+    tight_both = query_all([alone, twin], "worktree checkout database budget", budget=300)
+    assert tight_both["ctx_tokens"] == tight_one["ctx_tokens"]
     # the per-rig small print is still per rig
     assert [r["ctx_tokens"] for r in both["rigs"]] == [one["ctx_tokens"]] * 2
 
@@ -224,6 +230,33 @@ def test_an_unreadable_corpus_file_is_skipped_not_fatal(rig_dir, built):
     assert r["grep"]["files"] >= 1
     out = query_all([built], "worktree")
     assert out["grep_unreadable"] == 1 and out["grep_files"] == r["grep"]["files"]
+
+
+def test_a_symlink_loop_is_skipped_not_fatal(rig_dir, built):
+    loop = rig_dir / "docs" / "shared" / "loop.md"
+    loop.symlink_to(loop)  # points at itself: resolve() raises RuntimeError
+    r = run_query(built, "worktree")
+    assert r["grep"]["unreadable"] == 1 and r["grep"]["files"] >= 1
+    out = query_all([built], "worktree")
+    assert out["grep_unreadable"] == 1 and out["hits"]
+
+
+def test_grep_covers_only_rigs_ctx_actually_searched(rig_dir, built, tmp_path):
+    ghost = tmp_path / "ghost"
+    (ghost / ".ctx").mkdir(parents=True)
+    (ghost / ".ctx" / "config.yaml").write_text(
+        "corpora:\n  shared:\n    type: shared\n    path: docs\n"
+    )
+    (ghost / "docs").mkdir()
+    (ghost / "docs" / "w.md").write_text("worktree worktree worktree")
+    ghost_cfg = load_config(ghost / ".ctx")  # never indexed
+
+    alone = query_all([built], "worktree")
+    with_ghost = query_all([built, ghost_cfg], "worktree")
+    assert with_ghost["rigs"][1]["error"] == "no index.db"
+    assert with_ghost["grep_files"] == alone["grep_files"]
+    assert with_ghost["grep_tokens"] == alone["grep_tokens"]
+    assert with_ghost["ctx_tokens"] == alone["ctx_tokens"]
 
 
 def test_a_server_error_answers_json_instead_of_hanging(built, served, monkeypatch):
