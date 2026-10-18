@@ -48,11 +48,17 @@ main { display: grid; grid-template-columns: 1fr 420px; gap: 12px; padding: 0 16
 #doc .dp { color: var(--muted); font-size: 16px; word-break: break-all; }
 #doc h3 { margin: 4px 0 0; font-size: 16px; color: var(--muted); text-transform: uppercase;
   letter-spacing: .05em; font-weight: 600; }
-#doc pre { margin: 0; font: 17px/1.35 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
-  white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line);
-  border-radius: 6px; padding: 8px 10px; overflow: auto; }
-#doc #dfm { flex: 1 1 auto; min-height: 60px; }
-#doc #dctx { flex: 0 1 auto; max-height: 30%; }
+#dfm { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; grid-template-columns: max-content 1fr;
+  gap: 6px 16px; align-content: start; border-top: 1px solid var(--line); padding-top: 8px; }
+#dfm .k { color: var(--muted); font-size: 15px; text-transform: uppercase; letter-spacing: .05em;
+  padding-top: 3px; }
+#dfm .v { font-size: 19px; }
+#dfm .v.summary { font-size: 21px; line-height: 1.35; }
+#dfm .v.empty { color: var(--muted); }
+#dfm .chip { display: inline-block; font-size: 16px; border: 1px solid var(--line); background: var(--bg);
+  border-radius: 12px; padding: 1px 10px; margin: 0 6px 4px 0; }
+#dfm .v.terms .chip { border-color: var(--good); }
+#dfm code { font: 17px ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; }
 #doc .dn { font-size: 18px; }
 #doc .dn b { color: var(--good); } #doc .dn em { font-style: normal; color: var(--hit); font-weight: 600; }
 #map { width: 100%; height: 100%; display: block; }
@@ -129,9 +135,7 @@ body.q .link { opacity: .25; }
       <div class="dh"><div class="dt" id="dtitle"></div><button id="dclose" type="button" title="back to the map (Esc)">×</button></div>
       <div class="dp" id="dpath"></div>
       <h3>front matter — all ctx indexes</h3>
-      <pre id="dfm"></pre>
-      <h3>what ctx printed for it</h3>
-      <pre id="dctx"></pre>
+      <div id="dfm"></div>
       <div class="dn" id="dnums"></div>
     </div>
   </div>
@@ -308,7 +312,6 @@ async function showDoc(h, row) {
   $("dtitle").textContent = h.title || h.id;
   $("dpath").textContent = h.id;
   $("dfm").textContent = "loading…";
-  $("dctx").textContent = (h.text || "").trimEnd();
   $("dnums").textContent = "";
   $("doc").classList.add("open");
   let d = null;
@@ -320,7 +323,7 @@ async function showDoc(h, row) {
   if (seq !== docSeq) return;  // another row was clicked meanwhile
   if (d.error) { $("dfm").textContent = "Could not read this file: " + d.error; return; }
   $("dpath").textContent = d.path;
-  $("dfm").textContent = d.frontmatter === null ? "(no front matter — ctx has nothing to index here)" : d.frontmatter;
+  renderFields(d);
   const n = $("dnums"); n.replaceChildren();
   const fm = document.createElement("b"); fm.textContent = fmt(d.frontmatter_tokens);
   const all = document.createElement("em"); all.textContent = fmt(d.file_tokens);
@@ -328,6 +331,27 @@ async function showDoc(h, row) {
     " — ctx searches the front matter; the body stays on disk until an agent opens it");
 }
 $("dclose").onclick = closeDoc;
+
+/* front matter as a card: key on the left, value formatted by kind */
+function renderFields(d) {
+  const box = $("dfm"); box.replaceChildren();
+  if (d.frontmatter === null || !d.fields.length) {
+    box.textContent = "(no front matter — ctx has nothing to index here)"; return;
+  }
+  d.fields.forEach(([k, v]) => {
+    const kk = document.createElement("div"); kk.className = "k"; kk.textContent = k;
+    const vv = document.createElement("div"); vv.className = "v " + k;
+    if (Array.isArray(v)) {
+      if (!v.length) { vv.classList.add("empty"); vv.textContent = "—"; }
+      v.forEach((x) => { const c = document.createElement("span"); c.className = "chip"; c.textContent = x; vv.appendChild(c); });
+    } else if (k === "id") {
+      const c = document.createElement("code"); c.textContent = v; vv.appendChild(c);
+    } else {
+      vv.textContent = v || "—"; if (!v) vv.classList.add("empty");
+    }
+    box.append(kk, vv);
+  });
+}
 
 function showError(msg) {
   clearMarks(); closeDoc();

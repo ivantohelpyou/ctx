@@ -444,11 +444,12 @@ def test_bad_numbers_in_the_query_string_fall_back_to_defaults(served):
 def test_the_doc_endpoint_shows_a_returned_documents_front_matter(served):
     _, _, body = _fetch(served + "/api/query?q=budget")
     hit = json.loads(body)["hits"][0]
-    assert hit["text"].strip()  # the line ctx printed for it, for the panel
     _, _, body = _fetch(served + "/api/doc?key=" + urllib.parse.quote(hit["key"]))
     doc = json.loads(body)
     assert f"id: {hit['id']}" in doc["frontmatter"]
     assert not doc["frontmatter"].startswith("---")
+    assert ["id", hit["id"]] in doc["fields"]
+    assert all(isinstance(v, (str, list)) for _, v in doc["fields"])  # dates arrive as text
     assert 0 < doc["frontmatter_tokens"] <= doc["file_tokens"]
 
 

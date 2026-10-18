@@ -41,7 +41,7 @@ from .corpus import (
     iter_corpus_files,
     load_config,
 )
-from .frontmatter import FRONTMATTER_DELIM
+from .frontmatter import FRONTMATTER_DELIM, parse_frontmatter
 from .indexer import index_is_stale
 from .mappage import PAGE
 from .query import (
@@ -385,7 +385,7 @@ def query_all(rigs: list[RigConfig], query: str, **opts) -> dict:
                         seen[c["key"]]["rigs"].append(r["label"])
                     continue
                 entry = {"kind": kind, "key": c["key"], "id": c["id"], "title": c["title"],
-                         "rigs": [r["label"]], "text": c["text"]}
+                         "rigs": [r["label"]]}
                 seen[c["key"]] = entry
                 hits.append(entry)
                 lines.append(c["text"])
@@ -422,6 +422,16 @@ def _frontmatter_block(text: str) -> str | None:
     return None
 
 
+def _field(value) -> str | list[str]:
+    """One front-matter value as the page shows it: a list stays a list (of
+    strings), anything else is its text. YAML dates arrive as `date` objects."""
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, dict):
+        return yaml.safe_dump(value, sort_keys=False, allow_unicode=True).strip()
+    return "" if value is None else str(value)
+
+
 def doc_view(rigs: list[RigConfig], key: str) -> dict | None:
     """The front matter of one corpus file, for the page's document panel.
     `key` is a hit's key (its resolved path). Only a file some rig's corpus
@@ -442,6 +452,7 @@ def doc_view(rigs: list[RigConfig], key: str) -> dict | None:
                     "key": key,
                     "path": key.replace(str(Path.home()), "~", 1),
                     "frontmatter": block,
+                    "fields": [[k, _field(v)] for k, v in parse_frontmatter(text).items()],
                     "file_tokens": tokens(text),
                     "frontmatter_tokens": tokens(block or ""),
                 }
