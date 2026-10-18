@@ -323,6 +323,14 @@ def test_snapshot_groups_by_corpus_and_marks_superseded_docs_old(built):
     assert rig["stale"] is False
 
 
+def test_a_symlink_loop_made_after_the_index_marks_the_rig_stale_not_fatal(rig_dir, built):
+    loop = rig_dir / "docs" / "shared" / "loop.md"
+    loop.symlink_to(loop)  # appears after build_index, so only the stale check sees it
+    rig = snapshot([built])["rigs"][0]
+    assert rig["stale"] is True
+    assert rig["error"] is None
+    assert rig["corpora"]
+
 def test_a_chain_is_laid_out_contiguously(rig_dir):
     for n in range(4):
         _write(rig_dir, f"x{n}", f"x-{n}", f"Doc {n}", "filler")

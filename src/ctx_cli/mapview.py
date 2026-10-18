@@ -132,9 +132,13 @@ def snapshot(rigs: list[RigConfig]) -> dict:
     """Every document as a dot-to-be, grouped rig then corpus."""
     out = []
     for config in rigs:
+        try:
+            stale = index_is_stale(config)
+        except PATH_ERRORS:  # a looping or dangling .md symlink made since the last index
+            stale = True
         rig: dict = {
             "label": rig_label(config),
-            "stale": index_is_stale(config),
+            "stale": stale,
             "corpora": [],
             "error": None,
         }
