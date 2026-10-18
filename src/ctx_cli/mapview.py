@@ -296,7 +296,7 @@ def run_query(
     decisions = [c.name for c in config.corpora if c.type == "decisions"]
     work = [c.name for c in config.corpora if c.type == "work"]
 
-    hits, demoted, weak = retrieve(
+    hits, weak = retrieve(
         config.index_db_path,
         query,
         corpus=corpus,
@@ -306,7 +306,6 @@ def run_query(
         loose=loose,
     )
     kept, dropped = apply_budget(hits, budget, limit=limit)
-    dropped += demoted
     text = render(kept, dropped) + render_weak(weak)
     # `sweep=False`: the caller (query_all) does one union sweep itself.
     grep = grep_baseline(query, _corpus_dirs(config, corpus)) if sweep else None

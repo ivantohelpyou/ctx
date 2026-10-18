@@ -92,6 +92,9 @@ class Hit:
     # True if the walk found a successor edge back onto its own path — a
     # corrupt or hand-edited index, not a data shape `ctx lint` permits.
     cycle: bool = False
+    # A proposed decision `retrieve()` shows only as a lead — a `weak:` or
+    # `dropped:` line marked `(proposed)` — never as a kept hit (hq-7zfw).
+    lead: bool = False
 
 
 def _slugify(title: str) -> str:
@@ -182,7 +185,7 @@ def format_superseded_by(hit: Hit) -> str | None:
 
 
 def _mark(hit: Hit) -> str:
-    return f" ({PROPOSED})" if hit.status == PROPOSED else ""
+    return f" ({PROPOSED})" if hit.lead else ""
 
 
 def format_weak(hit: Hit) -> str:
@@ -351,32 +354,44 @@ def retrieve(
     decisions_corpora: list[str] | None = None,
     work_corpora: list[str] | None = None,
     loose: bool = False,
-) -> tuple[list[Hit], list[Hit], list[Hit]]:
-    """`(hits, demoted, weak)` for one query: the body of `ctx get`, shared by
-    every caller so the CLI and `ctx map` cannot drift apart. `hits` go to
-    `apply_budget()`; `demoted` are appended to its dropped list.
+) -> tuple[list[Hit], list[Hit]]:
+    """`(hits, weak)` for one query: the body of `ctx get`, shared by every
+    caller so the CLI and `ctx map` cannot drift apart.
 
     Hits are ranked with proposed decisions current. If every hit is a
     proposed decision — so with accepted ones alone the floor would have left
     nothing — they become the `weak:` leads instead. A proposed decision ranked
-    below the first other hit is demoted to a `dropped:` line (see the module
-    docstring). If nothing clears the floor at all, the leads are the best
-    one-word matches."""
+    below the first other hit stays in `hits`, in rank order, flagged `lead`,
+    and `apply_budget()` drops it. If nothing clears the floor at all, the
+    leads are the best one-word matches. `--history` and `--loose` flag
+    nothing: they ask for everything, as hits."""
     kw = dict(corpus=corpus, history=history, decisions_corpora=decisions_corpora,
               work_corpora=work_corpora)
     hits = search(index_db_path, query, loose=loose, **kw)
-    if loose or history:  # --history and --loose ask for everything, as hits
-        return hits, [], ([] if hits or loose else search(index_db_path, query, loose=True, **kw))
+    if loose:
+        return hits, []
     if not hits:
-        return [], [], search(index_db_path, query, loose=True, **kw)
+        weak = search(index_db_path, query, loose=True, **kw)
+        return [], (weak if history else _flag_proposed(weak, decisions_corpora))
+    if history:
+        return hits, []
     decisions = set(decisions_corpora or [])
     proposed = [h.corpus in decisions and h.status == PROPOSED for h in hits]
     if all(proposed):
-        return [], [], hits
+        return [], _flag_proposed(hits, decisions_corpora)
     first = proposed.index(False)
-    tail = list(zip(hits[first + 1 :], proposed[first + 1 :]))
-    keep = hits[: first + 1] + [h for h, p in tail if not p]
-    return keep, [h for h, p in tail if p], []
+    for h, p in zip(hits[first + 1 :], proposed[first + 1 :]):
+        h.lead = p
+    return hits, []
+
+
+def _flag_proposed(hits: list[Hit], decisions_corpora: list[str] | None) -> list[Hit]:
+    """Flag every proposed DECISION among `hits` as a lead — a doc in another
+    corpus with `status: proposed` is not a decision and is never marked."""
+    decisions = set(decisions_corpora or [])
+    for h in hits:
+        h.lead = h.corpus in decisions and h.status == PROPOSED
+    return hits
 
 
 def apply_budget(
@@ -387,22 +402,20 @@ def apply_budget(
     exceeds budget, so a query never returns zero results purely because one
     entry is large. Rank order (and its `documents.id` tie-break, from the
     SQL `ORDER BY`) is preserved, so which entries get dropped is
-    deterministic — same query, same index, same bytes."""
+    deterministic — same query, same index, same bytes. A hit flagged `lead`
+    is never kept: it is dropped where it ranks, and takes no budget or slot."""
     kept: list[Hit] = []
     cumulative_tokens = 0.0
-    cutoff = None
-    for i, hit in enumerate(hits):
-        if len(kept) >= limit:
-            cutoff = i
-            break
+    for hit in hits:
+        if hit.lead:
+            continue
         line_tokens = _rendered_char_len(hit) / 4
-        if kept and cumulative_tokens + line_tokens > budget:
-            cutoff = i
+        if len(kept) >= limit or (kept and cumulative_tokens + line_tokens > budget):
             break
         kept.append(hit)
         cumulative_tokens += line_tokens
-    dropped = hits[cutoff:] if cutoff is not None else []
-    return kept, dropped
+    taken = {id(h) for h in kept}
+    return kept, [h for h in hits if id(h) not in taken]
 
 
 def render(kept: list[Hit], dropped: list[Hit]) -> str:

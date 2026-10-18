@@ -240,7 +240,7 @@ def get_cmd(
     work_corpora = [c.name for c in config.corpora if c.type == "work"]
     try:
         ensure_fresh_index(config)
-        hits, demoted, weak = retrieve(
+        hits, weak = retrieve(
             config.index_db_path,
             query,
             corpus=corpus,
@@ -253,7 +253,6 @@ def get_cmd(
         raise click.ClickException(str(e)) from e
 
     kept, dropped = apply_budget(hits, budget, limit=limit)
-    dropped += demoted
     click.echo(render(kept, dropped), nl=False)
     click.echo(render_weak(weak), nl=False)
     if any(h.cycle for h in kept):
