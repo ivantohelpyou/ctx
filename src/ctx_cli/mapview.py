@@ -440,7 +440,7 @@ def history_log(rigs: list[RigConfig]) -> dict:
 
 # Queries shown by the page's "?" panel when no rig's config.yaml lists its own.
 DEFAULT_EXAMPLES = [
-    {"q": "gas gauge", "note": "few files, but huge ones"},
+    {"q": "gas gauge", "note": "grep's first file is right, but it reads two big ones too"},
     {"q": "custom tailor swatches fitting", "note": "one idea, found across rigs"},
     {"q": "droplet DigitalOcean timing x86 harness remote", "note": "where the test suites go"},
     {"q": "how does a new project become a rig", "note": "the question every repo has"},
