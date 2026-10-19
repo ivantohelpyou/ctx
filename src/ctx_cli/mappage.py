@@ -38,7 +38,30 @@ input[type=text]:focus { outline: none; border-color: var(--current); }
 form button { font-size: 24px; padding: 6px 22px; background: var(--current); color: var(--bg);
   border-color: var(--current); font-weight: 600; }
 main { display: grid; grid-template-columns: 1fr 420px; gap: 12px; padding: 0 16px; min-height: 0; }
-#mapwrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 0; }
+#mapwrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 0;
+  position: relative; }
+#doc { position: absolute; inset: 0; background: var(--panel); border-radius: 8px; padding: 10px 16px;
+  display: none; flex-direction: column; gap: 6px; overflow: hidden; z-index: 2; }
+#doc.open { display: flex; }
+#doc .dh { display: flex; align-items: baseline; gap: 12px; }
+#doc .dt { font-size: 24px; font-weight: 700; flex: 1; }
+#doc .dp { color: var(--muted); font-size: 16px; word-break: break-all; }
+#doc h3 { margin: 4px 0 0; font-size: 16px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .05em; font-weight: 600; }
+#dfm { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; grid-template-columns: max-content 1fr;
+  gap: 6px 16px; align-content: start; border-top: 1px solid var(--line); padding-top: 8px; }
+#dfm .k { color: var(--muted); font-size: 15px; text-transform: uppercase; letter-spacing: .05em;
+  padding-top: 3px; }
+#dfm .v { font-size: 19px; }
+#dfm .v.summary { font-size: 21px; line-height: 1.35; }
+#dfm .v.empty { color: var(--muted); }
+#dfm .chip { display: inline-block; font-size: 16px; border: 1px solid var(--line); background: var(--bg);
+  border-radius: 12px; padding: 1px 10px; margin: 0 6px 4px 0; }
+#dfm .v.terms .chip { border-color: var(--good); }
+#dfm code { font: 17px ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; }
+#dfm code.raw { grid-column: 1 / -1; white-space: pre-wrap; }
+#doc .dn { font-size: 18px; }
+#doc .dn b { color: var(--good); } #doc .dn em { font-style: normal; color: var(--hit); font-weight: 600; }
 #map { width: 100%; height: 100%; display: block; }
 #side { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }
 #numbers { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -50,7 +73,9 @@ main { display: grid; grid-template-columns: 1fr 420px; gap: 12px; padding: 0 16
 #verdict { font-size: 22px; font-weight: 600; min-height: 28px; }
 #verdict.miss { color: var(--miss); }
 #hits { overflow: auto; min-height: 0; flex: 1; }
-.hit { padding: 4px 0; border-top: 1px solid var(--line); font-size: 18px; }
+.hit { padding: 4px 0; border-top: 1px solid var(--line); font-size: 18px; cursor: pointer; }
+.hit:hover { background: var(--bg); }
+.hit.sel { background: var(--bg); box-shadow: inset 4px 0 0 var(--current); padding-left: 8px; }
 .hit .t { font-weight: 600; }
 .hit .id { color: var(--muted); font-size: 16px; }
 .hit.kept .t { color: var(--hit); }
@@ -105,7 +130,15 @@ body.q .link { opacity: .25; }
 </form>
 <div id="examples" role="dialog" aria-label="example queries"></div>
 <main>
-  <div id="mapwrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"></svg></div>
+  <div id="mapwrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="doc" aria-live="polite">
+      <div class="dh"><div class="dt" id="dtitle"></div><button id="dclose" type="button" title="back to the map (Esc)">×</button></div>
+      <div class="dp" id="dpath"></div>
+      <h3>front matter — all ctx indexes</h3>
+      <div id="dfm"></div>
+      <div class="dn" id="dnums"></div>
+    </div>
+  </div>
   <div id="side">
     <div id="numbers">
       <div class="num" id="ctxnum"><b>–</b><span>tokens ctx returned</span></div>
@@ -231,7 +264,7 @@ function mark(rigLabel, hits, cls) {
 function fmt(n) { return n.toLocaleString("en-US"); }
 
 function showResult(res) {
-  clearMarks();
+  clearMarks(); closeDoc();
   document.body.classList.add("q");
   res.rigs.forEach((r) => {
     mark(r.label, r.dropped, "dropped");
@@ -259,14 +292,75 @@ function showResult(res) {
     const id = document.createElement("div"); id.className = "id";
     id.textContent = h.id + " · " + where(h.rigs);
     row.append(t, id); box.appendChild(row);
+    row.onclick = () => showDoc(h, row);
   });
   const per = res.rigs.map((r) => shortName(r.label) + ": ctx " + fmt(r.ctx_tokens) + " tokens").join("  ·  ");
   $("perrig").textContent = "per rig (shared docs count in each) — " + per +
     (res.grep_unreadable ? "  ·  " + res.grep_unreadable + " unreadable file(s) skipped" : "");
 }
 
+/* the document panel: click a row, see the front matter ctx indexed, over the map */
+let docSeq = 0;
+function closeDoc() {
+  $("doc").classList.remove("open");
+  document.querySelectorAll(".hit.sel").forEach((r) => r.classList.remove("sel"));
+}
+async function showDoc(h, row) {
+  if (row.classList.contains("sel")) { closeDoc(); return; }
+  closeDoc(); row.classList.add("sel");
+  const seq = ++docSeq;
+  $("dtitle").textContent = h.title || h.id;
+  $("dpath").textContent = h.id;
+  $("dfm").textContent = "loading…";
+  $("dnums").textContent = "";
+  $("doc").classList.add("open");
+  let d = null;
+  try {
+    const resp = await fetch("/api/doc?key=" + encodeURIComponent(h.key || ""));
+    d = await resp.json();
+    if (!resp.ok || d.error) d = { error: d.error || ("HTTP " + resp.status) };
+  } catch (e) { d = { error: String(e) }; }
+  if (seq !== docSeq) return;  // another row was clicked meanwhile
+  if (d.error) { $("dfm").textContent = "Could not read this file: " + d.error; return; }
+  $("dpath").textContent = d.path;
+  renderFields(d);
+  const n = $("dnums"); n.replaceChildren();
+  const fm = document.createElement("b"); fm.textContent = fmt(d.frontmatter_tokens);
+  const all = document.createElement("em"); all.textContent = fmt(d.file_tokens);
+  n.append("front matter ", fm, " tokens · the whole file ", all,
+    " — ctx searches the front matter; the body stays on disk until an agent opens it");
+}
+$("dclose").onclick = closeDoc;
+
+/* front matter as a card: key on the left, value formatted by kind */
+function renderFields(d) {
+  const box = $("dfm"); box.replaceChildren();
+  if (d.frontmatter === null) {
+    box.textContent = "(no front matter — ctx has nothing to index here)"; return;
+  }
+  if (!d.fields.length) {  // a block, but empty or not YAML ctx can read: show it as written
+    const note = document.createElement("div"); note.className = "v empty";
+    note.textContent = "front matter present, but ctx can't read it as fields:";
+    const raw = document.createElement("code"); raw.className = "raw"; raw.textContent = d.frontmatter || "(empty)";
+    box.append(note, raw); return;
+  }
+  d.fields.forEach(([k, v]) => {
+    const kk = document.createElement("div"); kk.className = "k"; kk.textContent = k;
+    const vv = document.createElement("div"); vv.className = "v " + k;
+    if (Array.isArray(v)) {
+      if (!v.length) { vv.classList.add("empty"); vv.textContent = "—"; }
+      v.forEach((x) => { const c = document.createElement("span"); c.className = "chip"; c.textContent = x; vv.appendChild(c); });
+    } else if (k === "id") {
+      const c = document.createElement("code"); c.textContent = v; vv.appendChild(c);
+    } else {
+      vv.textContent = v || "—"; if (!v) vv.classList.add("empty");
+    }
+    box.append(kk, vv);
+  });
+}
+
 function showError(msg) {
-  clearMarks();
+  clearMarks(); closeDoc();
   $("verdict").textContent = ""; $("hits").replaceChildren(); $("perrig").textContent = "";
   $("ctxnum").firstChild.textContent = "–"; $("grepnum").firstChild.textContent = "–";
   $("error").textContent = "Could not run that query: " + msg;
@@ -309,7 +403,7 @@ $("help").onclick = toggleExamples;
 document.addEventListener("keydown", (e) => {
   const inBox = document.activeElement === $("q");
   if (e.key === "?" && (!inBox || !$("q").value)) { e.preventDefault(); toggleExamples(); }
-  else if (e.key === "Escape") closeExamples();
+  else if (e.key === "Escape") { closeExamples(); closeDoc(); }
 });
 $("qform").onsubmit = (e) => { e.preventDefault(); ask($("q").value); };
 

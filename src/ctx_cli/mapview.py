@@ -7,6 +7,7 @@ stdlib `http.server`, bound to 127.0.0.1:
     /api/query    one query, run through the same `retrieve()` + `apply_budget()`
                   `ctx get` uses, with ctx's tokens beside a keyword grep's
     /api/history  the logged queries and misses from each rig's ctx.db
+    /api/doc      one returned document's front matter: what ctx indexed
 
 Nothing here writes. The index is opened the way `search()` opens it
 (`mode=ro&immutable=1`), `ctx.db` with `mode=ro` (never through
@@ -40,6 +41,7 @@ from .corpus import (
     iter_corpus_files,
     load_config,
 )
+from .frontmatter import FRONTMATTER_DELIM, parse_frontmatter
 from .indexer import index_is_stale
 from .mappage import PAGE
 from .query import (
@@ -404,6 +406,68 @@ def query_all(rigs: list[RigConfig], query: str, **opts) -> dict:
     }
 
 
+def _frontmatter_block(text: str) -> str | None:
+    """The raw lines between the opening and closing `---`, as written (the
+    page shows the file, not ctx's parse of it); None if there is no block."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != FRONTMATTER_DELIM:
+        return None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == FRONTMATTER_DELIM:
+            return "\n".join(lines[1:i])
+    return None
+
+
+def _text(value) -> str:
+    """One YAML value as text: a mapping or list as YAML, None as empty, the
+    rest (dates arrive as `date` objects) as str. Always JSON-safe."""
+    if isinstance(value, (dict, list)):
+        return yaml.safe_dump(value, sort_keys=False, allow_unicode=True).strip()
+    return "" if value is None else str(value)
+
+
+def _field(value) -> str | list[str]:
+    """One front-matter value as the page shows it: a list stays a list of
+    texts (one chip each), anything else is its text."""
+    if isinstance(value, list):
+        return [_text(v) for v in value]
+    return _text(value)
+
+
+def _display_path(path: str) -> str:
+    home = str(Path.home())
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+
+
+def doc_view(rigs: list[RigConfig], key: str) -> dict | None:
+    """The front matter of one corpus file, for the page's document panel.
+    `key` is a hit's key (its resolved path). Only a file some rig's corpus
+    actually lists is served; any other path is None, so the endpoint cannot
+    read the rest of the disk."""
+    if not key or key.startswith("id:"):
+        return None
+    for config in rigs:
+        for spec in config.corpora:
+            for path in iter_corpus_files(spec):
+                if _real(path) != key:
+                    continue
+                text = _read(key)
+                if text is None:
+                    return None
+                block = _frontmatter_block(text)
+                return {
+                    "key": key,
+                    "path": _display_path(key),
+                    "frontmatter": block,
+                    # Keys too: YAML reads `2026-01-01:` as a date, and json.dumps
+                    # would 500 on it.
+                    "fields": [[_text(k), _field(v)] for k, v in parse_frontmatter(text).items()],
+                    "file_tokens": tokens(text),
+                    "frontmatter_tokens": tokens(block or ""),
+                }
+    return None
+
+
 def history_log(rigs: list[RigConfig]) -> dict:
     """The newest HISTORY_ROWS queries and misses across rigs, oldest first.
     A missing or unreadable ctx.db is an empty history, not an error."""
@@ -504,6 +568,12 @@ def make_handler(rigs: list[RigConfig]):
                 self._json({"examples": examples(rigs)})
             elif url.path == "/api/history":
                 self._json(history_log(rigs))
+            elif url.path == "/api/doc":
+                doc = doc_view(rigs, params.get("key", [""])[0])
+                if doc is None:
+                    self._json({"error": "not a document in these rigs"}, 404)
+                else:
+                    self._json(doc)
             elif url.path == "/api/query":
                 q = (params.get("q", [""])[0]).strip()
                 if not q:

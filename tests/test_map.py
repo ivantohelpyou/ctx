@@ -5,7 +5,9 @@ import hashlib
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -17,6 +19,8 @@ from ctx_cli.indexer import build_index
 from ctx_cli.mapview import (
     DEFAULT_EXAMPLES,
     GREP_TOP_FILES,
+    _display_path,
+    doc_view,
     examples,
     grep_baseline,
     history_log,
@@ -437,6 +441,71 @@ def test_bad_numbers_in_the_query_string_fall_back_to_defaults(served):
     _, _, body = _fetch(served + "/api/query?q=budget&budget=abc&limit=")
     assert json.loads(body)["rigs"][0]["kept"]
 
+
+
+def test_the_doc_endpoint_shows_a_returned_documents_front_matter(served):
+    _, _, body = _fetch(served + "/api/query?q=budget")
+    hit = json.loads(body)["hits"][0]
+    _, _, body = _fetch(served + "/api/doc?key=" + urllib.parse.quote(hit["key"]))
+    doc = json.loads(body)
+    assert f"id: {hit['id']}" in doc["frontmatter"]
+    assert not doc["frontmatter"].startswith("---")
+    assert ["id", hit["id"]] in doc["fields"]
+    assert all(isinstance(v, (str, list)) for _, v in doc["fields"])  # dates arrive as text
+    assert 0 < doc["frontmatter_tokens"] <= doc["file_tokens"]
+
+
+@pytest.mark.parametrize("key", ["", "id:adr-001", "/etc/hostname", "../../etc/hostname"])
+def test_the_doc_endpoint_serves_only_corpus_files(served, key):
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _fetch(served + "/api/doc?key=" + urllib.parse.quote(key))
+    assert e.value.code == 404
+
+
+def test_a_file_outside_every_corpus_is_refused_even_inside_the_rig(rig_dir, built):
+    assert doc_view([built], str((rig_dir / ".ctx" / "config.yaml").resolve())) is None
+
+
+def test_a_corpus_file_without_front_matter_says_so(rig_dir, built):
+    bare = rig_dir / "docs" / "shared" / "bare.md"
+    bare.write_text("# just a heading\n\nbody text\n")
+    doc = doc_view([built], str(bare.resolve()))
+    assert doc["frontmatter"] is None and doc["frontmatter_tokens"] == 0
+
+
+def test_odd_yaml_in_front_matter_still_serialises(rig_dir, built):
+    odd = rig_dir / "docs" / "shared" / "odd.md"
+    odd.write_text("---\nid: odd\n2026-01-01: a date as a key\nwhen: 2026-01-02 10:00:00\n"
+                   "tags: [{a: 1}, null, plain]\n---\nbody\n")
+    doc = doc_view([built], str(odd.resolve()))
+    json.dumps(doc)  # the endpoint's own encoding step: a date key used to raise
+    fields = dict((k, v) for k, v in doc["fields"])
+    assert fields["2026-01-01"] == "a date as a key"
+    assert fields["tags"] == ["a: 1", "", "plain"]  # YAML text, no Python repr
+
+
+@pytest.mark.parametrize("block", ["", "- a\n- b", "id: [unclosed"])
+def test_a_block_ctx_cannot_parse_comes_back_raw_with_no_fields(rig_dir, built, block):
+    bad = rig_dir / "docs" / "shared" / "bad.md"
+    bad.write_text(f"---\n{block}\n---\nbody\n" if block else "---\n---\nbody\n")
+    doc = doc_view([built], str(bad.resolve()))
+    assert doc["fields"] == [] and doc["frontmatter"] == block
+
+
+def test_a_weak_leads_key_opens_in_the_doc_endpoint(served):
+    _, _, body = _fetch(served + "/api/query?q=database+zebra")
+    res = json.loads(body)
+    weak = [h for h in res["hits"] if h["kind"] == "weak"]
+    assert weak and res["miss"]
+    _, _, body = _fetch(served + "/api/doc?key=" + urllib.parse.quote(weak[0]["key"]))
+    assert f"id: {weak[0]['id']}" in json.loads(body)["frontmatter"]
+
+
+def test_the_shown_path_shortens_only_a_leading_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert _display_path(f"{tmp_path}/gt/docs/a.md") == "~/gt/docs/a.md"
+    assert _display_path(f"/srv{tmp_path}/a.md") == f"/srv{tmp_path}/a.md"
+    assert _display_path(f"{tmp_path}x/a.md") == f"{tmp_path}x/a.md"
 
 # --- the command ----------------------------------------------------------
 
