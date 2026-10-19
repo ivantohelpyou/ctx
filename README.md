@@ -162,6 +162,8 @@ or, when nothing clears the relevance floor:
 
 ```
 weak: id — title — path#slug         (at most 3; the question is logged as a miss)
+weak: id — title — path#slug (proposed)
+dropped: id — title (proposed)
 ```
 
 **Relevance floor.** Stopwords (`in`, `the`, `how`, …) are left out, and a hit must match at
@@ -305,6 +307,13 @@ Decision records link with `supersedes:` / `superseded-by:`. **The links, not th
 field, decide what's current**: `ctx get` leaves a decision out if its status says it isn't
 current *or* anything supersedes it, so a record with a missing or stale `status:` can't slip
 through. Excluded decisions are filtered before ranking and never use up budget.
+
+`accepted` and `proposed` both count as current, so a proposed decision can outrank an
+accepted one that matches the question less well. But if **only** proposed decisions clear the
+relevance floor, they come back as `weak:` leads marked `(proposed)` and the question is logged
+as a miss, and a proposed decision ranked below any other hit is shown only as a `dropped:` line
+marked `(proposed)`. Measured on 90 real questions, a proposed record rescuing a would-be miss was as
+often noise as an answer; one outranking an accepted record was usually the better answer.
 
 With `--history`, superseded decisions are included, each annotated with every current head of
 its chain (a decision can be superseded by more than one other; a fork is valid data):

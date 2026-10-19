@@ -4,7 +4,7 @@ Serves one inline page (see `mappage.py`) and three JSON endpoints from the
 stdlib `http.server`, bound to 127.0.0.1:
 
     /api/map      every document of every rig, plus its supersession links
-    /api/query    one query, run through the same `search()` + `apply_budget()`
+    /api/query    one query, run through the same `retrieve()` + `apply_budget()`
                   `ctx get` uses, with ctx's tokens beside a keyword grep's
     /api/history  the logged queries and misses from each rig's ctx.db
     /api/doc      one returned document's front matter: what ctx indexed
@@ -55,7 +55,7 @@ from .query import (
     format_weak,
     render,
     render_weak,
-    search,
+    retrieve,
 )
 
 # Words that say nothing about which file is meant, for the grep baseline only
@@ -293,24 +293,20 @@ def run_query(
     sweep: bool = True,
 ) -> dict:
     """The body of `ctx get`, minus the index rebuild and the query log: the
-    same `search()` calls, the same floor and `weak:` fallback, the same
+    same `retrieve()` (floor, proposed leads and `weak:` fallback), the same
     `apply_budget()`. `text` is exactly what `ctx get` would print."""
     decisions = [c.name for c in config.corpora if c.type == "decisions"]
     work = [c.name for c in config.corpora if c.type == "work"]
 
-    def run(loose_: bool) -> list[Hit]:
-        return search(
-            config.index_db_path,
-            query,
-            corpus=corpus,
-            history=history,
-            decisions_corpora=decisions,
-            work_corpora=work,
-            loose=loose_,
-        )
-
-    hits = run(loose)
-    weak = run(True) if not hits and not loose else []
+    hits, weak = retrieve(
+        config.index_db_path,
+        query,
+        corpus=corpus,
+        history=history,
+        decisions_corpora=decisions,
+        work_corpora=work,
+        loose=loose,
+    )
     kept, dropped = apply_budget(hits, budget, limit=limit)
     text = render(kept, dropped) + render_weak(weak)
     # `sweep=False`: the caller (query_all) does one union sweep itself.
