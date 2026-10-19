@@ -59,6 +59,7 @@ main { display: grid; grid-template-columns: 1fr 420px; gap: 12px; padding: 0 16
   border-radius: 12px; padding: 1px 10px; margin: 0 6px 4px 0; }
 #dfm .v.terms .chip { border-color: var(--good); }
 #dfm code { font: 17px ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; }
+#dfm code.raw { grid-column: 1 / -1; white-space: pre-wrap; }
 #doc .dn { font-size: 18px; }
 #doc .dn b { color: var(--good); } #doc .dn em { font-style: normal; color: var(--hit); font-weight: 600; }
 #map { width: 100%; height: 100%; display: block; }
@@ -72,8 +73,7 @@ main { display: grid; grid-template-columns: 1fr 420px; gap: 12px; padding: 0 16
 #verdict { font-size: 22px; font-weight: 600; min-height: 28px; }
 #verdict.miss { color: var(--miss); }
 #hits { overflow: auto; min-height: 0; flex: 1; }
-.hit { padding: 4px 0; border-top: 1px solid var(--line); font-size: 18px; }
-.hit { cursor: pointer; }
+.hit { padding: 4px 0; border-top: 1px solid var(--line); font-size: 18px; cursor: pointer; }
 .hit:hover { background: var(--bg); }
 .hit.sel { background: var(--bg); box-shadow: inset 4px 0 0 var(--current); padding-left: 8px; }
 .hit .t { font-weight: 600; }
@@ -335,8 +335,14 @@ $("dclose").onclick = closeDoc;
 /* front matter as a card: key on the left, value formatted by kind */
 function renderFields(d) {
   const box = $("dfm"); box.replaceChildren();
-  if (d.frontmatter === null || !d.fields.length) {
+  if (d.frontmatter === null) {
     box.textContent = "(no front matter — ctx has nothing to index here)"; return;
+  }
+  if (!d.fields.length) {  // a block, but empty or not YAML ctx can read: show it as written
+    const note = document.createElement("div"); note.className = "v empty";
+    note.textContent = "front matter present, but ctx can't read it as fields:";
+    const raw = document.createElement("code"); raw.className = "raw"; raw.textContent = d.frontmatter || "(empty)";
+    box.append(note, raw); return;
   }
   d.fields.forEach(([k, v]) => {
     const kk = document.createElement("div"); kk.className = "k"; kk.textContent = k;

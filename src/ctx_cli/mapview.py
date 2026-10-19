@@ -418,14 +418,25 @@ def _frontmatter_block(text: str) -> str | None:
     return None
 
 
-def _field(value) -> str | list[str]:
-    """One front-matter value as the page shows it: a list stays a list (of
-    strings), anything else is its text. YAML dates arrive as `date` objects."""
-    if isinstance(value, list):
-        return [str(v) for v in value]
-    if isinstance(value, dict):
+def _text(value) -> str:
+    """One YAML value as text: a mapping or list as YAML, None as empty, the
+    rest (dates arrive as `date` objects) as str. Always JSON-safe."""
+    if isinstance(value, (dict, list)):
         return yaml.safe_dump(value, sort_keys=False, allow_unicode=True).strip()
     return "" if value is None else str(value)
+
+
+def _field(value) -> str | list[str]:
+    """One front-matter value as the page shows it: a list stays a list of
+    texts (one chip each), anything else is its text."""
+    if isinstance(value, list):
+        return [_text(v) for v in value]
+    return _text(value)
+
+
+def _display_path(path: str) -> str:
+    home = str(Path.home())
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
 
 
 def doc_view(rigs: list[RigConfig], key: str) -> dict | None:
@@ -446,9 +457,11 @@ def doc_view(rigs: list[RigConfig], key: str) -> dict | None:
                 block = _frontmatter_block(text)
                 return {
                     "key": key,
-                    "path": key.replace(str(Path.home()), "~", 1),
+                    "path": _display_path(key),
                     "frontmatter": block,
-                    "fields": [[k, _field(v)] for k, v in parse_frontmatter(text).items()],
+                    # Keys too: YAML reads `2026-01-01:` as a date, and json.dumps
+                    # would 500 on it.
+                    "fields": [[_text(k), _field(v)] for k, v in parse_frontmatter(text).items()],
                     "file_tokens": tokens(text),
                     "frontmatter_tokens": tokens(block or ""),
                 }
