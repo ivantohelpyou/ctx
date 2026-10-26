@@ -192,5 +192,5 @@ def test_routing_template_names_no_private_location():
 
 def test_routing_tells_the_agent_to_write_the_note_after_a_miss():
     """The one line of method the tool gives away: a miss you then resolve becomes a note."""
-    assert "If ctx logged a miss" in ROUTING_TEMPLATE
-    assert "write the note" in ROUTING_TEMPLATE and "`summary`" in ROUTING_TEMPLATE
+    assert "A miss you then resolve becomes a note" in ROUTING_TEMPLATE
+    assert "before you finish" in ROUTING_TEMPLATE and "`summary`" in ROUTING_TEMPLATE
