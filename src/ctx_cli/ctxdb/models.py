@@ -3,12 +3,9 @@
 The durable half is a SQLAlchemy models.py; FTS5 is a virtual table outside
 SQLAlchemy, created in one raw DDL step.
 
-
 This models.py holds the two tables `index.db` (the disposable FTS5 half,
 built by `indexer.py`) does not: the query log and the miss log. It is written
 as plain declarative SQLAlchemy (`DeclarativeBase`, `Mapped`/`mapped_column`).
-
-
 """
 
 from __future__ import annotations
