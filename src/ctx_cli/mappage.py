@@ -17,6 +17,11 @@ PAGE = r"""<!doctype html>
   --current: #0b5fd6; --old: #aeb4bf; --hit: #d9480f; --drop: #e8a317; --weak: #7a3fc4;
   --miss: #c92a2a; --good: #1b7f3b; --link: #8f9bb0;
 }
+#theme { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; }
+#theme svg { display: block; }
+.ic-sun { display: none !important; }   /* the button shows the mode a click switches to */
+:root[data-theme="dark"] .ic-sun { display: block !important; }
+:root[data-theme="dark"] .ic-moon { display: none !important; }
 :root[data-theme="dark"] {
   --bg: #0e1116; --panel: #171b22; --ink: #f2f4f8; --muted: #a3acb9; --line: #2c333f;
   --current: #5aa2ff; --old: #4a5260; --hit: #ff8a4c; --drop: #f4c04a; --weak: #b794f4;
@@ -122,7 +127,10 @@ body.q .link { opacity: .25; }
   <div class="sub" id="sub">loading…</div>
   <div class="legend"><i style="background:var(--current)"></i>current<i style="background:var(--old)"></i>superseded<i style="background:var(--hit)"></i>returned<i style="background:var(--drop)"></i>dropped<i style="background:var(--weak)"></i>weak lead</div>
   <button id="help" type="button" title="example queries (?)">?</button>
-  <button id="theme" type="button" title="light / dark (t)">light / dark</button>
+  <button id="theme" type="button" title="switch light / dark (t)" aria-label="switch between light and dark">
+    <svg class="ic-sun" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    <svg class="ic-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/></svg>
+  </button>
 </header>
 <form id="qform">
   <input type="text" id="q" placeholder="ask the map: where did we decide…" autocomplete="off" autofocus>
