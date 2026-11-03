@@ -17,7 +17,7 @@ PAGE = r"""<!doctype html>
   --current: #0b5fd6; --old: #aeb4bf; --hit: #d9480f; --drop: #e8a317; --weak: #7a3fc4;
   --miss: #c92a2a; --good: #1b7f3b; --link: #8f9bb0;
 }
-#theme { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; }
+#theme { display: inline-flex; align-items: center; justify-content: center; align-self: flex-end; height: 29px; padding-top: 0; padding-bottom: 0; }
 #theme svg { display: block; }
 .ic-sun { display: none !important; }   /* the button shows the mode a click switches to */
 :root[data-theme="dark"] .ic-sun { display: block !important; }
